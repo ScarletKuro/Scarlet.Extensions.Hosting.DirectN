@@ -5,13 +5,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Keep in sync with Scarlet.AspNetCore.Components.WebView.Win32Aot: 1.7.1 is the first release marked IsTrimmable/IsAotCompatible. -->
     <PackageVersion Include="DirectNAot" Version="1.7.1" />
     <PackageVersion Include="DirectNAot.Extensions" Version="1.7.1" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.3" />
     <!-- Tests -->
-    <!-- xunit.v3 4.x runs on Microsoft.Testing.Platform v2 (see global.json). -->
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
     <PackageVersion Include="xunit.v3.aot" Version="4.0.2" />
   </ItemGroup>

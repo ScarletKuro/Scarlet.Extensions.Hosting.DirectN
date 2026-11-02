@@ -15,7 +15,6 @@
     <Authors>ScarletKuro</Authors>
     <RepositoryUrl>https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>icon.png</PackageIcon>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

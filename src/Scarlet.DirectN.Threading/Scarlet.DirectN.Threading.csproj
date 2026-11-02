@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <PackageId>Scarlet.DirectN.Threading</PackageId>
-    <PackageTags>directn;win32;synchronizationcontext;dispatcher;threading;aot;nativeaot;scarletkuro</PackageTags>
+    <PackageTags>directn;win32;synchronizationcontext;dispatcher;threading;aot;nativeaot</PackageTags>
     <Description>UI-thread message queue and SynchronizationContext for DirectN (Win32) apps, Native AOT compatible. Shared by Scarlet.Extensions.Hosting.DirectN and Scarlet.AspNetCore.Components.WebView.Win32Aot so a UI thread has exactly one queue.</Description>
   </PropertyGroup>
 

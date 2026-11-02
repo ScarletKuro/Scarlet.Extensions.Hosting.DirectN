@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <PackageId>Scarlet.Extensions.Hosting.DirectN</PackageId>
-    <PackageTags>directn;hosting;generichost;dependencyinjection;win32;aot;nativeaot;scarletkuro</PackageTags>
+    <PackageTags>directn;hosting;generichost;dependencyinjection;win32;aot;nativeaot</PackageTags>
     <Description>Microsoft.Extensions.Hosting (Generic Host) integration for DirectN (Win32/Direct2D) desktop apps. Runs the DirectN UI thread inside the host, Native AOT compatible.</Description>
   </PropertyGroup>
 

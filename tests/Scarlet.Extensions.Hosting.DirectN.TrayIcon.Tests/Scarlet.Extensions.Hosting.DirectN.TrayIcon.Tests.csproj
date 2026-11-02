@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- Also published and run as a Native AOT executable in CI (xunit.v3.aot). -->
     <PublishAot>true</PublishAot>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Test code: rules that only matter for shipped libraries. -->

@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <PackageId>Scarlet.Extensions.Hosting.DirectN.Threading</PackageId>
-    <PackageTags>directn;hosting;threading;joinabletaskfactory;asynclazy;win32;aot;nativeaot;scarletkuro</PackageTags>
+    <PackageTags>directn;hosting;threading;joinabletaskfactory;asynclazy;win32;aot;nativeaot</PackageTags>
     <Description>Thread switching for Scarlet.Extensions.Hosting.DirectN: JoinableTaskFactory and AsyncLazy bound to the DirectN UI thread. Contains a trimmed, Native AOT compatible extract of Microsoft.VisualStudio.Threading (MIT); not affiliated with Microsoft.</Description>
   </PropertyGroup>
 
