@@ -294,6 +294,126 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void AnAwaitOnTheUiThreadResumingAfterItEndedIsDroppedWithoutCrashing()
+    {
+        var result = ScenarioRunner.Run("await-after-exit");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "OnExit|ui",
+            "OtherStopping|other",
+            "OtherStopped|other",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void ADirectNErrorInsideAModalLoopStopsTheHostOnceTheLoopReturns()
+    {
+        var result = ScenarioRunner.Run("modal-error");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "FaultyWindowCreated|ui",
+            "RanDuringModal|ui",
+            "ModalClosed|ui",
+            "OnExit|ui",
+            "HostStopped|not-running");
+        Assert.Contains(result.Output, line => line.Contains("DirectN reported an error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void WithTheFatalErrorDialogTheErrorIsStillLoggedAndFailsStartup()
+    {
+        var result = ScenarioRunner.Run("fatal-dialog");
+
+        result.AssertExitCode(ScenarioRunner.HostFailedExitCode);
+        result.AssertEvents(
+            "FaultyWindowCreated|ui",
+            "ClosingDialog|other",
+            "OnExit|ui",
+            "HostFailed|InvalidOperationException: window failure");
+        Assert.Contains(result.Output, line => line.Contains("DirectN reported an error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AMessageBoxInOnExitWaitsForTheUserAlsoWhenAWindowWasStillOpen()
+    {
+        var result = ScenarioRunner.Run("onexit-modal");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "WindowCreated|ui",
+            "RanDuringModal|ui",
+            "OnExitModal|answered-by-user",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void ExitingBeforeTheApplicationHasStartedStopsTheHostNormally()
+    {
+        var result = ScenarioRunner.Run("exit-before-started");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "HandleApplicationExit|ui",
+            "OnExit|ui",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void TheUiThreadDoesntInheritTheExecutionContextOfWhoeverStartedTheHost()
+    {
+        var result = ScenarioRunner.Run("ui-execution-context");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnStartup|",
+            "FlowSuppressedPost|",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void EnvironmentExitOnTheUiThreadStopsTheOtherServicesWithoutWaitingForTheShutdownTimeout()
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var result = ScenarioRunner.Run("environment-exit");
+
+        // The shutdown timeout is 10 s: waiting for the UI thread would take at least that.
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(8), $"Took {watch.Elapsed}.{Environment.NewLine}{result.Describe()}");
+        result.AssertExitCode(5);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "EnvironmentExit|ui",
+            "OtherStopping|other",
+            "OtherStopped|other");
+    }
+
+    [Fact]
+    public void TheEndOfTheWindowsSessionStopsTheApplicationAndTheHostBeforeWindowsMayEndTheProcess()
+    {
+        var result = ScenarioRunner.Run("session-end");
+
+        result.AssertExitCode(0);
+
+        // HostStopped is reported by the main thread, independently of EndSessionReturned.
+        Assert.Equal(
+            [
+                "OnStartup|ui:app",
+                "ComponentInit|ui",
+                "QueryEndSession|1",
+                "OnExit|ui",
+                "ComponentDispose|ui",
+                "OtherStopping|other",
+                "OtherStopped|other",
+                "EndSessionReturned|host-stopped",
+            ],
+            result.Events.Where(e => !e.StartsWith("HostStopped|", StringComparison.Ordinal)));
+        Assert.Contains("HostStopped|not-running", result.Events);
+    }
+
+    [Fact]
     public void TrayIconIsCreatedAndDisposedOnTheUiThread()
     {
         var result = ScenarioRunner.Run("tray");

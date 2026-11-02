@@ -31,10 +31,18 @@ namespace Scarlet.DirectN.Threading;
 /// </remarks>
 public sealed unsafe partial class DirectNMessageQueue
 {
-    private const string WindowClassName = "Scarlet.DirectN.Threading.DirectNMessageQueue";
+    private const string WakeMessageName = "Scarlet.DirectN.Threading.DirectNMessageQueue";
 
-    // Upper bound of work items run per wake-up so a flood of posts can't starve input and paint messages.
+    // Unique per copy of this library in the process (e.g. two Native AOT DLLs), so each copy has its own window procedure.
+    private static readonly string WindowClassName = WakeMessageName + "." + Guid.NewGuid().ToString("N");
+
+    // Upper bound of work items run per wake-up so a flood of posts can't starve input, paint and timer messages.
     private const int MaxItemsPerWakeUp = 256;
+
+    // The timer that continues a backlog once pending input, paint and timer messages have had their turn.
+    private const nuint ContinueTimerId = 1;
+    private const uint WM_TIMER = 0x0113;
+    private const uint QS_INPUT_PAINT_TIMER = 0x0407 | 0x0020 | 0x0010;
 
     // Parent handle that makes CreateWindowEx create a message-only window.
     private const nint HWND_MESSAGE = -3;
@@ -67,6 +75,7 @@ public sealed unsafe partial class DirectNMessageQueue
     private int _wakePending;
 
     private int _closeReason;
+    private int _dropped;
 
     // 1 once closed. Written with Interlocked (a full fence) so that, together with the fence of ConcurrentQueue.Enqueue,
     // a TryPost racing with closing either sees the queue closed or has its item dropped by the closing thread.
@@ -227,21 +236,40 @@ public sealed unsafe partial class DirectNMessageQueue
         _wakeRetry.Dispose();
         Functions.DestroyWindow(_hwnd);
         _self.Free();
+        _ownerExit?.Dispose();
+        GC.SuppressFinalize(this);
         if (t_current == this)
         {
             t_current = null;
         }
     }
 
+    /// <summary>
+    /// Finalizes the queue of a thread that exited without <see cref="Close"/> (its window went with the thread).
+    /// </summary>
+    ~DirectNMessageQueue()
+    {
+        if (_self.IsAllocated)
+        {
+            _self.Free();
+        }
+    }
+
+    /// <summary>
+    /// Gets the number of work items the queue dropped without running them, because it was closed (or its thread exited) first.
+    /// </summary>
+    public int DroppedCount => Volatile.Read(ref _dropped);
+
     internal static InvalidOperationException QueueClosedException() =>
         new("The DirectN UI thread's queue is closed or its thread has exited; the work did not run.");
 
     /// <summary>
-    /// Blocks until <paramref name="done"/> is set, or until the owning thread exits; then whatever is still queued is
+    /// Blocks until <paramref name="send"/> has completed, or until the owning thread exits; then whatever is still queued is
     /// dropped (which releases a pending Send). Used by cross-thread Send.
     /// </summary>
-    internal void WaitForSend(ManualResetEventSlim done)
+    internal void WaitForSend(DirectNSynchronizationContext.SendWork send)
     {
+        var done = send.Done;
         if (_ownerExit is { } ownerExit)
         {
             if (WaitHandle.WaitAny([done.WaitHandle, ownerExit]) == 0)
@@ -265,9 +293,9 @@ public sealed unsafe partial class DirectNMessageQueue
             }
         }
 
-        // The owner exited without running the work (it can't exit while running it), so it never will.
+        // The owner exited without finishing the work, so it never will.
         StopAcceptingWork(QueueCloseReason.OwnerExitedDuringSend);
-        done.Wait();
+        send.AbandonAfterOwnerExit();
     }
 
     private bool Wake()
@@ -302,14 +330,8 @@ public sealed unsafe partial class DirectNMessageQueue
 
         if (!Functions.PostMessageW(_hwnd, WakeMessage, default, default))
         {
-            try
-            {
-                _wakeRetry.Change(WakeRetryDelay, Timeout.InfiniteTimeSpan);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Closed in the meantime.
-            }
+            // Returns false (doesn't throw) if Close disposed the timer in the meantime.
+            _wakeRetry.Change(WakeRetryDelay, Timeout.InfiniteTimeSpan);
         }
     }
 
@@ -357,6 +379,7 @@ public sealed unsafe partial class DirectNMessageQueue
     {
         while (_queue.TryDequeue(out var item))
         {
+            Interlocked.Increment(ref _dropped);
             if (item.State is DirectNSynchronizationContext.SendWork send)
             {
                 send.Abandon();
@@ -377,10 +400,40 @@ public sealed unsafe partial class DirectNMessageQueue
 
         if (Volatile.Read(ref _closed) == 0 && !_queue.IsEmpty)
         {
-            // More work than one wake-up's worth: let input and paint messages run first. Never fails while the thread
-            // runs (a full message queue is retried).
+            // More work than one wake-up's worth. Posted messages are retrieved before input, paint and timer messages, so
+            // another wake-up message would starve those: when any is pending, continue from a timer instead (retrieved after
+            // all of them), as WPF does for background work.
+            if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0 && YieldToPendingMessages())
+            {
+                return;
+            }
+
+            // Never fails while the thread runs (a full message queue is retried).
             Wake();
         }
+    }
+
+    private bool YieldToPendingMessages()
+    {
+        // From now on posts don't post a wake-up message (the timer picks their work up), and one a post made during the drain
+        // already posted is removed: it would be retrieved before the input it should yield to.
+        Interlocked.Exchange(ref _wakePending, 1);
+        while (Functions.PeekMessageW(out _, _hwnd, WakeMessage, WakeMessage, PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE | PEEK_MESSAGE_REMOVE_TYPE.PM_NOYIELD))
+        {
+        }
+
+        if (Functions.SetTimer(_hwnd, ContinueTimerId, 0, null) != 0)
+        {
+            return true;
+        }
+
+        // No timer available: post the wake-up message after all (_wakePending is already set, so Wake would skip it).
+        if (!Functions.PostMessageW(_hwnd, WakeMessage, default, default) && !CloseIfOwnerGone())
+        {
+            _wakeRetry.Change(WakeRetryDelay, Timeout.InfiniteTimeSpan);
+        }
+
+        return true;
     }
 
     private void Execute(WorkItem item)
@@ -445,13 +498,16 @@ public sealed unsafe partial class DirectNMessageQueue
         ThreadPool.UnsafeQueueUserWorkItem(static state => ((ExceptionDispatchInfo)state!).Throw(), edi);
     }
 
+    [LibraryImport("user32.dll")]
+    private static partial uint GetQueueStatus(uint flags);
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial nint OpenThread(uint dwDesiredAccess, int bInheritHandle, uint dwThreadId);
 
     private static uint RegisterWakeMessage()
     {
         uint message;
-        fixed (char* name = WindowClassName)
+        fixed (char* name = WakeMessageName)
         {
             message = Functions.RegisterWindowMessageW(new PWSTR { Value = (nint)name });
         }
@@ -500,7 +556,13 @@ public sealed unsafe partial class DirectNMessageQueue
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static nint WindowProc(nint hwnd, uint msg, nint wParam, nint lParam)
     {
-        if (msg == WakeMessage)
+        var continueTimer = msg == WM_TIMER && (nuint)wParam == ContinueTimerId;
+        if (continueTimer)
+        {
+            Functions.KillTimer(new HWND(hwnd), ContinueTimerId);
+        }
+
+        if (msg == WakeMessage || continueTimer)
         {
             var userData = Functions.GetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA);
             if (userData != 0 && GCHandle.FromIntPtr(userData).Target is DirectNMessageQueue queue)

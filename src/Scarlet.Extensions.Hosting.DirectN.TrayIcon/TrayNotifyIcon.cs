@@ -21,7 +21,8 @@ namespace Scarlet.Extensions.Hosting.DirectN.TrayIcon;
 /// </remarks>
 public sealed unsafe class TrayNotifyIcon : IDisposable
 {
-    private const string WindowClassName = "Scarlet.Extensions.Hosting.DirectN.TrayIcon.NotifyIcon";
+    // Unique per copy of this library in the process (e.g. two Native AOT DLLs), so each copy has its own window procedure.
+    private static readonly string WindowClassName = "Scarlet.Extensions.Hosting.DirectN.TrayIcon.NotifyIcon." + Guid.NewGuid().ToString("N");
     private const uint WM_TRAYMOUSEMESSAGE = WM_USER + 1024;
     private const int MaxTextLength = 127;
     private const int MaxBalloonTextLength = 255;

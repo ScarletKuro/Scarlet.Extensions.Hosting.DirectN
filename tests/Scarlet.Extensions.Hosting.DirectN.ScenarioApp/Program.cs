@@ -23,6 +23,8 @@ internal static class Program
     private static readonly Lock ReportLock = new();
     private static Thread? s_uiThread;
 
+    public static AsyncLocal<string?> HostStartValue { get; } = new();
+
     public static int Main(string[] args)
     {
         var scenario = args.Length > 0 ? args[0] : string.Empty;
@@ -58,6 +60,9 @@ internal static class Program
 
             return 0;
         }
+
+        // Set by whoever starts the host: must not leak into the UI thread.
+        HostStartValue.Value = "host-start";
 
         try
         {
@@ -364,5 +369,37 @@ internal sealed class ThrowingDisposeComponent : IDirectNComponent, IDisposable
     {
         Program.Report("ThrowingDispose", Program.Where());
         throw new InvalidOperationException("component dispose failure");
+    }
+}
+
+/// <summary>
+/// Takes a while to stop, after the UI thread has ended; signals when it starts and finishes stopping.
+/// </summary>
+internal sealed class SlowStopService : IHostedService
+{
+    public static TaskCompletionSource Stopping { get; } = new();
+
+    public static bool Stopped { get; private set; }
+
+    /// <summary>
+    /// Started on the UI thread: an operation that completes after the UI thread has ended, while the host still stops.
+    /// </summary>
+    public static async Task AwaitStopOnUiThread(IServiceProvider services)
+    {
+        var operation = Stopping.Task;
+        services.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+        await operation;
+        Program.Report("ResumedAfterExit", Program.Where());
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        Program.Report("OtherStopping", Program.Where());
+        Stopping.TrySetResult();
+        await Task.Delay(500, CancellationToken.None);
+        Stopped = true;
+        Program.Report("OtherStopped", Program.Where());
     }
 }

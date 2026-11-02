@@ -21,6 +21,7 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        DirectNThread.RegisterProcessExitHandler();
         services.AddOptions<DirectNOptions>();
         services.TryAddSingleton<DirectNContext>();
         services.TryAddSingleton<DirectNThread>();

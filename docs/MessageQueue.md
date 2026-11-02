@@ -17,7 +17,8 @@ queue.Post(_ => window.Text = "Updated", null);
 - Work is kept in memory and a single wake-up message is posted to a message-only window of the UI thread. Window messages are
   dispatched by every message loop, **including modal ones** (menus, message boxes, task dialogs, window move/resize), so queued
   work never stalls while one of those is open. Thread messages (`PostThreadMessage`) would be lost there.
-- At most 256 items run per wake-up so a flood of posts can't starve input and paint messages.
+- At most 256 items run per wake-up. When more are queued and input, paint or timer messages are pending, the queue continues
+  from a timer (retrieved after all of them, as WPF does for background work), so a flood of posts can't starve them.
 - Like WPF's Dispatcher and WinForms' `BeginInvoke`, each item runs in the `ExecutionContext` captured from its caller
   (`AsyncLocal` values, culture), and what it changes there doesn't leak into later items. Work posted with flow suppressed
   runs in the UI thread's own baseline context.
@@ -26,6 +27,9 @@ queue.Post(_ => window.Text = "Updated", null);
   terminate the process, like WinForms and WPF.
 - `TryPost` returns `false` (and `Post` throws `InvalidOperationException`) only when the work can never run: the queue is
   closed or its thread has exited (`IsClosed`). A full thread message queue is retried, not reported.
+- `DirectNSynchronizationContext.Post` never throws: once the queue is closed the work is dropped, like WPF's and WinForms'
+  contexts after shutdown. It is the context `await` resumes on, and the runtime turns an exception thrown there into one that
+  terminates the process. `DroppedCount` counts the work dropped by closing.
 - A cross-thread `Send` always returns: the work ran, or it throws `InvalidOperationException` because the queue closed or its
   thread exited first, also when the thread exits without `Close`.
 - Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread

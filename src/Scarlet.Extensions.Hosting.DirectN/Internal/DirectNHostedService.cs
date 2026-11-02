@@ -56,7 +56,8 @@ internal sealed class DirectNHostedService(ILogger<DirectNHostedService> logger,
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The host's shutdown timeout elapsed; disposing the host still stops and waits for the UI thread (DirectNThread.Dispose).
+            // The host's shutdown timeout elapsed: the host goes on stopping without waiting for the UI thread any longer.
+            thread.OnStopTimedOut();
         }
     }
 

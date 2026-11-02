@@ -82,11 +82,15 @@ Do such work from `BackgroundService.ExecuteAsync` or `IHostApplicationLifetime.
 Started last, the UI is also stopped first: before any hosted service's `StopAsync`, the host waits until the UI thread has
 fully ended (remaining windows closed, `OnExit`, components disposed), up to `HostOptions.ShutdownTimeout`. Application
 cleanup can therefore still use other hosted services and every registered service. When the application exits on its own
-(last window closed, `Application.Exit()`, `IDirectNThread.HandleApplicationExit()`), the host stops.
+(last window closed, `Application.Exit()`, `IDirectNThread.HandleApplicationExit()`), the host stops. When the Windows
+session ends (log off, shut down, restart, or the Restart Manager closing the application), Windows ends the process right
+after announcing it: the application is cleaned up and the host stopped right then, before Windows may end the process.
 
 Known limitations:
-- Waiting for the UI thread is bounded by `HostOptions.ShutdownTimeout`. Application code that blocks longer (in
+- Waiting for the UI thread is bounded by `HostOptions.ShutdownTimeout`, once. Application code that blocks longer (in
   initialization or cleanup) may still run after the host has started disposing services.
+- `Environment.Exit` called on the UI thread blocks it for good: the other hosted services are still stopped, but the
+  application's cleanup (`OnExit`, components) doesn't run.
 - One DirectN host per process: DirectN allows one `Application` per thread and none after its process-wide exit.
 
 `AddDirectNLifetime()` is optional. With any host lifetime, `AddDirectN` stops the host when the DirectN application

@@ -276,9 +276,181 @@ internal static unsafe partial class Scenarios
                 OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().HandleApplicationExit());
                 return true;
 
+            case "await-after-exit":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddHostedService<SlowStopService>();
+                OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().SynchronizationContext.Post(_ => _ = SlowStopService.AwaitStopOnUiThread(sp), null));
+                return true;
+
+            case "modal-error":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddDirectNComponent(_ => new FaultyWindowComponent(failBeforeStart: false, throwOnDispose: false));
+                OnStarted(services, sp =>
+                {
+                    var context = sp.GetRequiredService<IDirectNThread>().SynchronizationContext;
+                    context.Post(_ =>
+                    {
+                        // Both run inside the message box's modal loop, which discards DirectN's request to quit.
+                        context.Post(_ => global::DirectN.Functions.SendMessageW(FaultyWindowComponent.Window!.Handle, FaultyWindow.FailMessage, default, default), null);
+                        CloseModalLater(context);
+                        ShowModal();
+                        Program.Report("ModalClosed", Program.Where());
+                    }, null);
+                });
+                return true;
+
+            case "fatal-dialog":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    options.ShowFatalErrorDialog = true;
+                    options.OnStartup = (_, _) => StartDialogCloser(Functions.GetCurrentThreadId());
+                    options.OnExit = (_, _) => Program.Report("OnExit", Program.Where());
+                });
+                services.AddDirectNComponent(_ => new FaultyWindowComponent(failBeforeStart: true, throwOnDispose: false));
+                return true;
+
+            case "onexit-modal":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnLastWindowClose;
+                    options.OnExit = (_, _) =>
+                    {
+                        // The application still has a window when the host stops it: closing it must not answer this box.
+                        var context = SynchronizationContext.Current!;
+                        CloseModalLater(context);
+                        ShowModal();
+                        Program.Report("OnExitModal", s_modalClosedByScenario ? "answered-by-user" : "closed-by-itself");
+                    };
+                });
+                services.AddDirectNComponent<WindowComponent>();
+                OnStarted(services, sp => sp.GetRequiredService<IHostApplicationLifetime>().StopApplication());
+                return true;
+
+            case "exit-before-started":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    options.OnStartup = (sp, _) =>
+                    {
+                        // Runs in the loop before the application has been reported as started.
+                        var thread = sp.GetRequiredService<IDirectNThread>();
+                        thread.SynchronizationContext.Post(_ =>
+                        {
+                            Program.Report("HandleApplicationExit", Program.Where());
+                            thread.HandleApplicationExit();
+                        }, null);
+                    };
+                    options.OnExit = (_, _) => Program.Report("OnExit", Program.Where());
+                });
+                return true;
+
+            case "ui-execution-context":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    options.OnStartup = (sp, _) =>
+                    {
+                        Program.Report("OnStartup", Program.HostStartValue.Value);
+                        var thread = sp.GetRequiredService<IDirectNThread>();
+                        using (ExecutionContext.SuppressFlow())
+                        {
+                            thread.SynchronizationContext.Post(_ =>
+                            {
+                                Program.Report("FlowSuppressedPost", Program.HostStartValue.Value);
+                                thread.HandleApplicationExit();
+                            }, null);
+                        }
+                    };
+                });
+                return true;
+
+            case "environment-exit":
+                services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(10));
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddHostedService<SlowStopService>();
+                OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().SynchronizationContext.Post(_ =>
+                {
+                    Program.Report("EnvironmentExit", Program.Where());
+                    Environment.Exit(5);
+                }, null));
+                return true;
+
+            case "session-end":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddDirectNComponent<ProbeComponent>();
+                services.AddHostedService<SlowStopService>();
+                OnStarted(services, sp =>
+                {
+                    var context = sp.GetRequiredService<IDirectNThread>().SynchronizationContext;
+                    uint uiThreadId = 0;
+                    context.Send(_ => uiThreadId = Functions.GetCurrentThreadId(), null);
+                    var window = FindSessionEndWindow(uiThreadId);
+
+                    // What Windows sends when the user logs off. The process may be terminated once WM_ENDSESSION returns.
+                    const uint WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016;
+                    var allowed = Functions.SendMessageW(new HWND(window), WM_QUERYENDSESSION, default, default).Value;
+                    Program.Report("QueryEndSession", allowed.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    Functions.SendMessageW(new HWND(window), WM_ENDSESSION, new WPARAM { Value = 1 }, default);
+                    Program.Report("EndSessionReturned", SlowStopService.Stopped ? "host-stopped" : "host-still-running");
+                });
+                return true;
+
             default:
                 return false;
         }
+    }
+
+    private static bool s_modalClosedByScenario;
+
+    private static void StartDialogCloser(uint uiThreadId)
+    {
+        var closer = new Thread(() =>
+        {
+            while (true)
+            {
+                s_modal = 0;
+                EnumThreadWindows(uiThreadId, &FindDialog, 0);
+                if (s_modal != 0)
+                {
+                    Program.Report("ClosingDialog", Program.Where());
+                    const uint WM_COMMAND = 0x0111, TDM_CLICK_BUTTON = 0x0400 + 102;
+                    const nint IDOK = 1;
+                    Functions.PostMessageW(new HWND(s_modal), TDM_CLICK_BUTTON, new WPARAM { Value = (nuint)IDOK }, default);
+                    Functions.PostMessageW(new HWND(s_modal), WM_COMMAND, new WPARAM { Value = (nuint)IDOK }, default);
+                    return;
+                }
+
+                Thread.Sleep(20);
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        closer.Start();
+    }
+
+    private static nint FindSessionEndWindow(uint uiThreadId)
+    {
+        s_sessionWindow = 0;
+        EnumThreadWindows(uiThreadId, &FindSessionWindow, 0);
+        return s_sessionWindow != 0 ? s_sessionWindow : throw new InvalidOperationException("No session end window.");
+    }
+
+    private static nint s_sessionWindow;
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static int FindSessionWindow(nint hwnd, nint lParam)
+    {
+        var className = stackalloc char[128];
+        var length = GetClassNameW(hwnd, className, 128);
+        if (new ReadOnlySpan<char>(className, length).StartsWith("Scarlet.Extensions.Hosting.DirectN.SessionEnd."))
+        {
+            s_sessionWindow = hwnd;
+            return 0;
+        }
+
+        return 1;
     }
 
     public static void AfterRun(string scenario, IDirectNThread thread)
@@ -291,8 +463,8 @@ internal static unsafe partial class Scenarios
 
         if (scenario == "shutdown-timeout")
         {
-            // ShutdownTimeout (1 s) for StoppingAsync, then at most the same again when the host disposes the UI thread.
-            Program.Report("StoppedWithinTimeout", s_stopRequested!.Elapsed < TimeSpan.FromSeconds(3.5) ? "yes" : $"no ({s_stopRequested.Elapsed})");
+            // ShutdownTimeout (1 s) once: disposing the host doesn't wait for the UI thread again after StoppingAsync gave up.
+            Program.Report("StoppedWithinTimeout", s_stopRequested!.Elapsed < TimeSpan.FromSeconds(2.5) ? "yes" : $"no ({s_stopRequested.Elapsed})");
         }
 
         if (scenario == "send")
@@ -336,6 +508,12 @@ internal static unsafe partial class Scenarios
         }
     }
 
+    /// <summary>
+    /// Closes the message box after a while, so it only closes earlier if something else closes it.
+    /// </summary>
+    private static void CloseModalLater(SynchronizationContext context) =>
+        _ = Task.Delay(500).ContinueWith(_ => context.Post(CloseModal, context), TaskScheduler.Default);
+
     private static void CloseModal(object? state)
     {
         // The message box of this thread (so a box of another process can never match).
@@ -350,6 +528,7 @@ internal static unsafe partial class Scenarios
         }
 
         Program.Report("RanDuringModal", Program.Where());
+        s_modalClosedByScenario = true;
         const nint IDOK = 1;
         EndDialog(s_modal, IDOK);
     }

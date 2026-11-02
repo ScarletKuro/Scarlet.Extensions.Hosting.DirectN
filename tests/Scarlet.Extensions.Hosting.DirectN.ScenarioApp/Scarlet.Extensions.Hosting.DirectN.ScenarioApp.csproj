@@ -10,6 +10,7 @@
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>

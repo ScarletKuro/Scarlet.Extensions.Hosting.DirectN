@@ -51,4 +51,16 @@ internal static partial class LoggingExtensions
 
     [LoggerMessage(15, LogLevel.Debug, "Application.Exit() was cancelled by an ApplicationExiting handler; the host forces the exit")]
     internal static partial void DirectNExitCancelled(this ILogger logger);
+
+    [LoggerMessage(16, LogLevel.Warning, "The process is exiting and the DirectN UI thread doesn't respond (e.g. Environment.Exit was called on it): the host stops without waiting for it, so the application's cleanup (OnExit, components) doesn't run")]
+    internal static partial void DirectNNotRespondingOnProcessExit(this ILogger logger);
+
+    [LoggerMessage(18, LogLevel.Warning, "The DirectN UI thread didn't end within the host's shutdown timeout ({timeout}); the host stops without waiting for it")]
+    internal static partial void DirectNStopTimedOut(this ILogger logger, TimeSpan timeout);
+
+    [LoggerMessage(19, LogLevel.Information, "The Windows session is ending: stopping the DirectN application and the host")]
+    internal static partial void DirectNSessionEnding(this ILogger logger);
+
+    [LoggerMessage(17, LogLevel.Warning, "{count} work item(s) posted to the DirectN UI thread were dropped because the UI thread ended before running them")]
+    internal static partial void DirectNQueuedWorkDropped(this ILogger logger, int count);
 }

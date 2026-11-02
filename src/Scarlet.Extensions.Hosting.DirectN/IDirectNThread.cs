@@ -26,7 +26,8 @@ public interface IDirectNThread
 
     /// <summary>
     /// Stops the host, which exits the DirectN application. Callable from any thread, e.g. from a tray icon's Exit item.
-    /// Ignored when the application isn't running.
+    /// Before the application has started (e.g. from <c>OnStartup</c>), the host is stopped once it has: stopping a host
+    /// while it starts would fail its startup. Ignored when startup failed or the host is being disposed.
     /// </summary>
     void HandleApplicationExit();
 

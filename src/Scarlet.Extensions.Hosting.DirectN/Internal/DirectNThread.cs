@@ -11,13 +11,17 @@ namespace Scarlet.Extensions.Hosting.DirectN.Internal;
 /// <summary>
 /// The UI thread: creates the message queue, the DirectN <see cref="Application"/> and the components, runs the message loop,
 /// and reports the application as started once the loop runs (<see cref="Started"/>). Failures until then fail host startup.
-/// Whoever stops the application early (<see cref="StopAndWait"/>) waits for the UI thread to end, so application cleanup never
-/// runs against services the host has already disposed.
+/// Whoever stops the application early (<see cref="StopAndWait"/>) waits for the UI thread to end, up to the host's shutdown timeout,
+/// so application cleanup doesn't run against services the host has already disposed.
 /// </summary>
-internal sealed class DirectNThread : IDirectNThread, IDisposable
+internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
 {
     // Used if HostOptions are not registered; matches the HostOptions.ShutdownTimeout default.
     private const int DefaultStopTimeoutSeconds = 30;
+    private const uint WM_QUIT = 0x0012;
+    private const uint QS_ALLINPUT = 0x04FF;
+    private const uint MWMO_INPUTAVAILABLE = 0x0004;
+    private const uint WAIT_OBJECT_0 = 0;
 
     // How long stopping the application early waits for the UI thread to end: the host's shutdown timeout. Read once, when the
     // thread is created, because the service provider may already be disposing when it is needed.
@@ -44,6 +48,29 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     private DirectNMessageQueue? _queue;
     private volatile bool _disposed;
     private volatile bool _stopRequested;
+
+    // Set when the process exits while the UI thread can't run any more (see OnProcessExit).
+    private volatile bool _exitingProcess;
+
+    // Set when the host's stop already waited its whole shutdown timeout for the UI thread to end.
+    private volatile bool _stopTimedOut;
+
+    // UI thread only.
+    private Application? _application;
+    private DisposableList<IDirectNComponent>? _components;
+    private bool _cleanedUp;
+
+    // Errors DirectN reported and then cleared itself (its fatal error dialog clears them once shown); see CaptureErrors.
+    private readonly List<Exception> _capturedErrors = [];
+    private readonly Lock _errorsLock = new();
+    private Func<global::DirectN.HWND, bool>? _showFatalErrorFunc;
+
+    // How long a process exit waits for the UI thread to answer before treating it as unable to run (see OnProcessExit).
+    private static readonly TimeSpan ProcessExitResponseTimeout = TimeSpan.FromSeconds(2);
+
+    private static DirectNThread? s_running;
+
+    private static int s_processExitRegistered;
 
     private readonly TaskCompletionSource<bool> _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<bool> _completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -88,7 +115,11 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     /// <summary>
     /// Starts the UI thread. Called by <see cref="DirectNHostedService"/> at the right point of the host lifecycle.
     /// </summary>
-    internal void Start() => MainThread.Start();
+    /// <remarks>
+    /// Without the starting thread's ExecutionContext: AsyncLocal values, logging scopes and Activity.Current of whoever started
+    /// the host would otherwise leak into every UI callback for the application's whole lifetime.
+    /// </remarks>
+    internal void Start() => MainThread.UnsafeStart();
 
     /// <summary>
     /// Gets the UI thread's queue while it exists (from its creation until the UI thread ends), else <see langword="null"/>.
@@ -105,16 +136,44 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     }
 
     /// <inheritdoc />
-    public void HandleApplicationExit()
+    public void HandleApplicationExit() => StopHost();
+
+    /// <summary>
+    /// Stops the host. Until the application has started, the stop is deferred to then: stopping a host while it starts cancels
+    /// its startup, which it reports as a startup failure. Never once startup has failed or the host is being disposed.
+    /// </summary>
+    private void StopHost()
     {
-        // Stopped by the library because the host failed to start or is being disposed: the host must not be stopped
-        // (it is not running, and its service provider may already be disposing).
-        if (_disposed || _stopRequested || !_context.IsRunning)
+        if (_disposed || _stopRequested)
         {
             return;
         }
 
-        _serviceProvider.GetService<IHostApplicationLifetime>()?.StopApplication();
+        var started = _started.Task;
+        if (!started.IsCompleted)
+        {
+            started.ContinueWith(
+                static (_, state) => ((DirectNThread)state!).StopHost(),
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion,
+                TaskScheduler.Default);
+            return;
+        }
+
+        if (!started.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        try
+        {
+            _serviceProvider.GetService<IHostApplicationLifetime>()?.StopApplication();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The host is being disposed.
+        }
     }
 
     /// <summary>
@@ -237,16 +296,27 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             return;
         }
 
-        if (MainThread.IsAlive && Thread.CurrentThread != MainThread)
+        // Not when the host's stop already waited the shutdown timeout for it, so the host never waits for it longer than that,
+        // nor while the process exits with a UI thread that can't run any more.
+        if (MainThread.IsAlive && Thread.CurrentThread != MainThread && !_exitingProcess && !_stopTimedOut)
         {
             MainThread.Join(_stopTimeout);
         }
     }
 
     /// <summary>
+    /// Called when the host's stop gave up waiting for the UI thread (its shutdown timeout elapsed).
+    /// </summary>
+    internal void OnStopTimedOut()
+    {
+        _stopTimedOut = true;
+        _logger.DirectNStopTimedOut(_stopTimeout);
+    }
+
+    /// <summary>
     /// Called by the DI container when the host (its service provider) is disposed; explicit so only the container calls it.
     /// Normally the UI thread has already ended: StoppingAsync waits for it, and <see cref="DirectNStartupGuard"/> stops it if
-    /// the host never finished starting. This is the last resort: no UI thread may outlive the host.
+    /// the host never finished starting. This is the last resort, bounded by the shutdown timeout like the rest.
     /// </summary>
     void IDisposable.Dispose()
     {
@@ -298,14 +368,61 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
         }
     }
 
+    /// <summary>
+    /// Registers, once per process and before any host lifetime does (it is called while services are registered), the handler
+    /// that keeps the host from waiting for a UI thread that can't run any more while the process exits. ProcessExit handlers run
+    /// in registration order, and DirectNLifetime's then blocks until the host has stopped.
+    /// </summary>
+    internal static void RegisterProcessExitHandler()
+    {
+        if (Interlocked.Exchange(ref s_processExitRegistered, 1) == 0)
+        {
+            AppDomain.CurrentDomain.ProcessExit += static (_, _) => Volatile.Read(ref s_running)?.OnProcessExit();
+        }
+    }
+
+    private void OnProcessExit()
+    {
+        // Environment.Exit blocks its calling thread while another thread runs the ProcessExit handlers. If that caller is the UI
+        // thread, its loop never runs again: waiting for it to end would only delay the exit by the shutdown timeout. Whether it
+        // still runs is only visible from here by asking it. Otherwise the host's usual stop runs, cleanup included.
+        // Only while a host could still wait for it: not once disposed (e.g. Main returned after host.Run).
+        if (_disposed || CurrentQueue is not { } queue || !MainThread.IsAlive)
+        {
+            return;
+        }
+
+        var responded = new ManualResetEventSlim();
+        if (!queue.TryPost(static state => ((ManualResetEventSlim)state!).Set(), responded)
+            || responded.Wait(ProcessExitResponseTimeout)
+            || !MainThread.IsAlive)
+        {
+            return;
+        }
+
+        _exitingProcess = true;
+        _context.IsRunning = false;
+        _started.TrySetCanceled();
+        _completed.TrySetResult(true);
+        try
+        {
+            _logger.DirectNNotRespondingOnProcessExit();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     private void UiThreadStart()
     {
+        Volatile.Write(ref s_running, this);
         try
         {
             RunUiThread();
         }
         finally
         {
+            Interlocked.CompareExchange(ref s_running, null, this);
             lock (_stateLock)
             {
                 // From now on posts are dropped instead of queued.
@@ -313,7 +430,15 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             }
 
             // Work still queued is dropped (a pending Send throws instead of waiting forever) and the window is released.
-            DirectNMessageQueue.Current?.Close();
+            if (DirectNMessageQueue.Current is { } queue)
+            {
+                queue.Close();
+                if (queue.DroppedCount > 0)
+                {
+                    _logger.DirectNQueuedWorkDropped(queue.DroppedCount);
+                }
+            }
+
             DropPendingPosts();
             // Startup did not complete (e.g. the application exited before its loop ran): nothing left to wait for.
             _started.TrySetResult(true);
@@ -324,6 +449,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     private void RunUiThread()
     {
         Application? application = null;
+        SessionEndWindow? sessionWindow = null;
         // Disposed when the UI thread ends, also if a later component fails to initialize.
         var components = new DisposableList<IDirectNComponent>();
 #pragma warning disable CA1031 // Not swallowed: rethrown on the host thread by DirectNHostedService.StartedAsync via Started, or logged.
@@ -339,16 +465,27 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 // Without the dialog, a window procedure error must make DirectN record it and quit the loop (the host then logs
                 // it and stops); otherwise DirectN shows its task dialog from the window procedure, whatever CanShowFatalError says.
                 Application.CanShowFatalError = _options.ShowFatalErrorDialog;
-                if (!_options.ShowFatalErrorDialog)
+                if (_options.ShowFatalErrorDialog)
+                {
+                    // DirectN's dialog clears the errors once shown: keep them, so they are still logged (and fail startup).
+                    Application.ShowFatalErrorFunc = _showFatalErrorFunc = ShowFatalError;
+                }
+                else
                 {
                     Application.ShowFatalErrorsOnUnhandledException = false;
                 }
+
                 Application.ExitAllOnLastWindowRemoved = _options.ShutdownMode == ShutdownMode.OnLastWindowClose;
-                application = new Application
+                application = new HostApplication(this)
                 {
                     ExitOnLastWindowRemoved = _options.ShutdownMode == ShutdownMode.OnLastWindowClose,
                 };
                 _context.Application = application;
+                _application = application;
+                _components = components;
+
+                // Ending the Windows session ends the process right after it was announced: the application is stopped then.
+                sessionWindow = new SessionEndWindow(OnSessionEnd);
 
                 lock (_stateLock)
                 {
@@ -363,6 +500,13 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             {
                 // An exception escaping this background thread would kill the process without being logged.
                 _started.TrySetException(exception);
+                return;
+            }
+
+            // DirectN reported an error while initializing (a window procedure threw): fail host startup with it.
+            if (TakeErrors() is { Count: > 0 } initErrors)
+            {
+                _started.TrySetException(initErrors.Count == 1 ? initErrors[0] : new AggregateException(initErrors));
                 return;
             }
 
@@ -396,12 +540,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 _context.IsRunning = false;
             }
 
-            var errors = Application.GetErrors(clear: true);
-            foreach (var error in errors)
-            {
-                _logger.DirectNError(error);
-            }
-
+            var errors = TakeErrors();
             if (errors.Count > 0)
             {
                 // The loop ended because of an error before the application had started: fail host startup.
@@ -411,23 +550,36 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             // The application exited on its own (last window closed, Application.Exit(), an error): stop the host. When the host
             // is the one stopping, it is already stopping and this does nothing. Not when startup failed: host startup reports
             // that failure itself, and stopping now would cancel it first, hiding the exception behind a cancellation.
-            if (!startupFailed && !_disposed && !_stopRequested)
+            if (!startupFailed)
             {
-                _serviceProvider.GetService<IHostApplicationLifetime>()?.StopApplication();
+                StopHost();
             }
         }
         finally
         {
             Cleanup(application, components);
+            sessionWindow?.Dispose();
         }
 #pragma warning restore CA1031
     }
 
     private void Cleanup(Application? application, DisposableList<IDirectNComponent> components)
     {
+        // Once: also run early when the session ends (OnSessionEnd).
+        if (_cleanedUp)
+        {
+            return;
+        }
+
+        _cleanedUp = true;
 #pragma warning disable CA1031 // Cleanup must reach the end so the host never waits for a UI thread that is gone; failures are logged.
         if (application is not null)
         {
+            // Closing the last window must not exit again: DirectN would post WM_QUIT, which closes any message box or dialog
+            // OnExit or a component's Dispose shows, as if the user had answered it.
+            application.ExitOnLastWindowRemoved = false;
+            Application.ExitAllOnLastWindowRemoved = false;
+
             // Like WPF's Application.Shutdown: windows still open are closed before the exit callback runs.
             foreach (var window in application.Windows)
             {
@@ -439,6 +591,11 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 {
                     _logger.DirectNUnhandledException(exception);
                 }
+            }
+
+            // A quit request still pending (e.g. the host's exit arriving after the loop had already ended) would do the same.
+            while (global::DirectN.Functions.PeekMessageW(out _, default, WM_QUIT, WM_QUIT, global::DirectN.PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE))
+            {
             }
 
             try
@@ -471,7 +628,153 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
         {
             _logger.DirectNUnhandledException(exception);
         }
+
+        if (_showFatalErrorFunc is not null && Application.ShowFatalErrorFunc == _showFatalErrorFunc)
+        {
+            Application.ShowFatalErrorFunc = null;
+        }
+
+        // Errors reported during cleanup.
+        TakeErrors();
 #pragma warning restore CA1031
+    }
+
+    /// <summary>
+    /// The Windows session ends (WM_ENDSESSION, on the UI thread): the process may be terminated as soon as this returns, so the
+    /// application is stopped here and now, not through the message loop. Cleans up the application as its exit would, lets
+    /// the host stop its other services meanwhile, and keeps running UI-thread work until the host has stopped.
+    /// </summary>
+    private void OnSessionEnd()
+    {
+        if (!_context.IsRunning || _application is not { } application || _components is not { } components)
+        {
+            return;
+        }
+
+        _logger.DirectNSessionEnding();
+        _context.IsRunning = false;
+        StopHost();
+        Cleanup(application, components);
+        _completed.TrySetResult(true);
+        WaitForHostStopped();
+
+        // WM_ENDSESSION is sent: it ran inside the loop's GetMessage, which would otherwise go on waiting for a message.
+        global::DirectN.Functions.PostQuitMessage(0);
+    }
+
+    private void WaitForHostStopped()
+    {
+        if (_serviceProvider.GetService<IHostApplicationLifetime>() is not { } lifetime)
+        {
+            return;
+        }
+
+        using var stopped = new ManualResetEvent(false);
+        using (lifetime.ApplicationStopped.Register(static state => ((ManualResetEvent)state!).Set(), stopped))
+        {
+            var deadline = Environment.TickCount64 + (long)_stopTimeout.TotalMilliseconds;
+            var handle = stopped.SafeWaitHandle.DangerousGetHandle();
+            while (true)
+            {
+                var remaining = deadline - Environment.TickCount64;
+                if (remaining <= 0
+                    || MsgWaitForMultipleObjectsEx(1, &handle, (uint)remaining, QS_ALLINPUT, MWMO_INPUTAVAILABLE) == WAIT_OBJECT_0)
+                {
+                    break;
+                }
+
+                // The other hosted services may still post (or send) to the UI thread while they stop.
+                while (global::DirectN.Functions.PeekMessageW(out var msg, default, 0, 0, global::DirectN.PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE))
+                {
+                    if (msg.message == WM_QUIT)
+                    {
+                        // The application's exit, already done.
+                        continue;
+                    }
+
+                    global::DirectN.Functions.TranslateMessage(msg);
+                    global::DirectN.Functions.DispatchMessageW(msg);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Takes (and logs) the errors DirectN reported: those it still holds and those kept from its fatal error dialog.
+    /// </summary>
+    private List<Exception> TakeErrors()
+    {
+        List<Exception> errors;
+        lock (_errorsLock)
+        {
+            CaptureErrors();
+            Application.ClearErrors();
+            errors = [.. _capturedErrors];
+            _capturedErrors.Clear();
+        }
+
+        foreach (var error in errors)
+        {
+            _logger.DirectNError(error);
+        }
+
+        return errors;
+    }
+
+    private void CaptureErrors()
+    {
+        lock (_errorsLock)
+        {
+            foreach (var error in Application.Errors)
+            {
+                if (!_capturedErrors.Contains(error))
+                {
+                    _capturedErrors.Add(error);
+                }
+            }
+        }
+    }
+
+    private bool HasErrors
+    {
+        get
+        {
+            lock (_errorsLock)
+            {
+                return _capturedErrors.Count > 0 || Application.HasErrors;
+            }
+        }
+    }
+
+    /// <summary>
+    /// DirectN's fatal error dialog (ShowFatalErrorDialog), keeping the errors it clears once shown. May run on any thread
+    /// (DirectN also shows it for an unhandled exception).
+    /// </summary>
+    private bool ShowFatalError(global::DirectN.HWND hwnd)
+    {
+        CaptureErrors();
+        return Application.ShowFatalError(hwnd, configureOptions: null, callCustomFunc: false);
+    }
+
+    /// <summary>
+    /// The DirectN application, ending its message loop on any DirectN error. DirectN asks for that with a thread message,
+    /// which modal loops (message boxes, menus, window move/resize) discard: once such a loop returns, the error is seen here.
+    /// </summary>
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial uint MsgWaitForMultipleObjectsEx(uint count, nint* handles, uint milliseconds, uint wakeMask, uint flags);
+
+    private sealed class HostApplication(DirectNThread thread) : Application
+    {
+        protected override global::DirectN.BOOL GetMessage(out global::DirectN.MSG msg, global::DirectN.HWND hWnd, uint wMsgFilterMin, uint wMsgFilterMax)
+        {
+            if (thread.HasErrors)
+            {
+                msg = new global::DirectN.MSG { message = (int)WM_APP_QUIT };
+                return true;
+            }
+
+            return base.GetMessage(out msg, hWnd, wMsgFilterMin, wMsgFilterMax);
+        }
     }
 
     /// <summary>

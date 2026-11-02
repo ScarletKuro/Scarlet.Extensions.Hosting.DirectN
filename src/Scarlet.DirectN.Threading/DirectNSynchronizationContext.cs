@@ -24,11 +24,18 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     /// <inheritdoc />
     public override SynchronizationContext CreateCopy() => this;
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Queues <paramref name="d"/> to run on the UI thread. Never throws: once the queue is closed (or its thread has exited)
+    /// the work is dropped, like WPF's and WinForms' contexts do after shutdown. This is the context <c>await</c> resumes on, and
+    /// the runtime turns an exception thrown here into an unhandled exception that terminates the process. Use
+    /// <see cref="DirectNMessageQueue.TryPost"/> to know whether the work was queued.
+    /// </summary>
+    /// <param name="d">The work to run.</param>
+    /// <param name="state">The state passed to <paramref name="d"/>.</param>
     public override void Post(SendOrPostCallback d, object? state)
     {
         ArgumentNullException.ThrowIfNull(d);
-        Queue.Post(d, state);
+        Queue.TryPost(d, state);
     }
 
     /// <summary>
@@ -58,7 +65,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
             throw DirectNMessageQueue.QueueClosedException();
         }
 
-        Queue.WaitForSend(work.Done);
+        Queue.WaitForSend(work);
         work.ThrowIfFailed();
     }
 
@@ -102,6 +109,21 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
 
             _error = ExceptionDispatchInfo.Capture(DirectNMessageQueue.QueueClosedException());
             Done.Set();
+        }
+
+        /// <summary>
+        /// The owner thread has exited: if the work never finished (not queued any more, or the thread died while running it),
+        /// release the caller.
+        /// </summary>
+        public void AbandonAfterOwnerExit()
+        {
+            Abandon();
+            if (!Done.IsSet)
+            {
+                // Run had started but its thread died before it finished (e.g. ExitThread from the callback).
+                _error = ExceptionDispatchInfo.Capture(DirectNMessageQueue.QueueClosedException());
+                Done.Set();
+            }
         }
 
         public void ThrowIfFailed() => _error?.Throw();
