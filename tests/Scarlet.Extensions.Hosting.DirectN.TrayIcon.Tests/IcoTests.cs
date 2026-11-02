@@ -103,11 +103,11 @@ public class IcoTests
     [Fact]
     public void FromApplicationIconUsesTheExecutablesIconResource()
     {
-        // The test host's own icon (if any): either loads, or fails as a missing resource; never anything else.
+        // This test executable has an <ApplicationIcon>.
         using var image = TrayIconImage.FromApplicationIcon();
-        var exception = Record.Exception(() => image.GetHandle(16));
 
-        Assert.True(exception is null or System.ComponentModel.Win32Exception, exception?.ToString());
+        Assert.NotEqual(0, image.GetHandle(16));
+        Assert.NotEqual(0, image.GetHandle(32));
     }
 
     [Fact]
