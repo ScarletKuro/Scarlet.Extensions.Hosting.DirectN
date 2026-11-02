@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Test code: rules that only matter for shipped libraries. -->
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1849</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
+    <!-- Built alongside so ScenarioTests can run it; each scenario runs in its own process. -->
+    <ProjectReference Include="..\Scarlet.Extensions.Hosting.DirectN.ScenarioApp\Scarlet.Extensions.Hosting.DirectN.ScenarioApp.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

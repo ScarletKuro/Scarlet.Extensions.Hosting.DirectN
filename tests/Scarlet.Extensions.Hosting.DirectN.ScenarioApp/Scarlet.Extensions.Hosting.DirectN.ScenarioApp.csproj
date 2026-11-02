@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Runs one hosting scenario per process (DirectN allows one Application per process) and reports events on stdout.
+    Driven by ScenarioTests. Also the Native AOT smoke test: CI publishes it with PublishAot and runs every scenario.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
+    <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN.TrayIcon\Scarlet.Extensions.Hosting.DirectN.TrayIcon.csproj" />
+  </ItemGroup>
+
+</Project>
