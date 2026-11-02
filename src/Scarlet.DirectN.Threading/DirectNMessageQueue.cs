@@ -66,6 +66,8 @@ public sealed unsafe partial class DirectNMessageQueue
     // 1 while a wake-up message is posted (or being retried) and not processed yet.
     private int _wakePending;
 
+    private int _closeReason;
+
     // 1 once closed. Written with Interlocked (a full fence) so that, together with the fence of ConcurrentQueue.Enqueue,
     // a TryPost racing with closing either sees the queue closed or has its item dropped by the closing thread.
     private int _closed;
@@ -216,7 +218,7 @@ public sealed unsafe partial class DirectNMessageQueue
         }
 
         // 1. Logical closing: reject new work and abandon what is queued (the same as when the owner is found gone).
-        if (!StopAcceptingWork())
+        if (!StopAcceptingWork(QueueCloseReason.Closed))
         {
             return;
         }
@@ -264,7 +266,7 @@ public sealed unsafe partial class DirectNMessageQueue
         }
 
         // The owner exited without running the work (it can't exit while running it), so it never will.
-        StopAcceptingWork();
+        StopAcceptingWork(QueueCloseReason.OwnerExitedDuringSend);
         done.Wait();
     }
 
@@ -313,14 +315,21 @@ public sealed unsafe partial class DirectNMessageQueue
 
     private bool CloseIfOwnerGone()
     {
-        if (Thread.IsAlive && Functions.IsWindow(_hwnd))
+        var threadAlive = Thread.IsAlive;
+        if (threadAlive && Functions.IsWindow(_hwnd))
         {
             return false;
         }
 
-        StopAcceptingWork();
+        StopAcceptingWork(threadAlive ? QueueCloseReason.WindowGone : QueueCloseReason.OwnerThreadExited);
         return true;
     }
+
+    /// <summary>
+    /// Gets why the queue stopped accepting work (the first reason), for diagnostics. <see cref="QueueCloseReason.None"/>
+    /// while open; <see cref="IsClosed"/> can also be true without a reason once the owner thread has exited.
+    /// </summary>
+    internal QueueCloseReason CloseReason => (QueueCloseReason)Volatile.Read(ref _closeReason);
 
     /// <summary>
     /// Logical closing, callable from any thread (by <see cref="Close"/>, or when the owner thread is found gone): rejects all
@@ -328,9 +337,14 @@ public sealed unsafe partial class DirectNMessageQueue
     /// on the owner thread.
     /// </summary>
     /// <returns><see langword="true"/> for the call that closed the queue.</returns>
-    private bool StopAcceptingWork()
+    private bool StopAcceptingWork(QueueCloseReason reason)
     {
         var first = Interlocked.Exchange(ref _closed, 1) == 0;
+        if (first)
+        {
+            Volatile.Write(ref _closeReason, (int)reason);
+        }
+
         AbandonQueuedWork();
         return first;
     }
@@ -527,4 +541,16 @@ public sealed unsafe partial class DirectNMessageQueue
             SafeWaitHandle = handle;
         }
     }
+}
+
+/// <summary>
+/// Why a <see cref="DirectNMessageQueue"/> stopped accepting work (diagnostics).
+/// </summary>
+internal enum QueueCloseReason
+{
+    None,
+    Closed,
+    OwnerExitedDuringSend,
+    OwnerThreadExited,
+    WindowGone,
 }

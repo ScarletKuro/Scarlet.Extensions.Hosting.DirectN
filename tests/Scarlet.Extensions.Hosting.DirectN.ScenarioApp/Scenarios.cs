@@ -212,6 +212,27 @@ internal static unsafe partial class Scenarios
                 });
                 return true;
 
+            case "shutdown-timeout":
+                services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(1));
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+                    // Cleanup that outlives the shutdown timeout: the host must give up waiting, not hang.
+                    options.OnExit = (_, _) =>
+                    {
+                        Program.Report("OnExitStarted", Program.Where());
+                        Thread.Sleep(TimeSpan.FromSeconds(4));
+                        Program.Report("OnExitFinished", Program.Where());
+                    };
+                });
+                OnStarted(services, sp =>
+                {
+                    s_stopRequested = System.Diagnostics.Stopwatch.StartNew();
+                    sp.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+                });
+                return true;
+
             case "execution-context":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 services.AddHostedService(sp => new ContextPostService(sp.GetRequiredService<IDirectNThread>()));
@@ -268,6 +289,12 @@ internal static unsafe partial class Scenarios
             Program.Report("PostAfterExit", "no-throw");
         }
 
+        if (scenario == "shutdown-timeout")
+        {
+            // ShutdownTimeout (1 s) for StoppingAsync, then at most the same again when the host disposes the UI thread.
+            Program.Report("StoppedWithinTimeout", s_stopRequested!.Elapsed < TimeSpan.FromSeconds(3.5) ? "yes" : $"no ({s_stopRequested.Elapsed})");
+        }
+
         if (scenario == "send")
         {
             Program.Report("SendDuringExitFinished", s_sendDuringExit!.Wait(TimeSpan.FromSeconds(10)) ? "yes" : "hung");
@@ -276,6 +303,7 @@ internal static unsafe partial class Scenarios
     }
 
     private static Task? s_sendDuringExit;
+    private static System.Diagnostics.Stopwatch? s_stopRequested;
 
     internal static void SendAndReport(SynchronizationContext context, string name)
     {

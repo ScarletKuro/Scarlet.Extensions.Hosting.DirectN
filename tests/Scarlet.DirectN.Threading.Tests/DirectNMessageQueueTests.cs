@@ -203,11 +203,22 @@ public class DirectNMessageQueueTests
             }, TestContext.Current.CancellationToken)).ToArray();
 
             await Task.Delay(Random.Shared.Next(1, 20), TestContext.Current.CancellationToken);
-            await loop.InvokeAsync(() =>
+            try
             {
-                loop.Queue.Close();
-                return true;
-            });
+                await loop.InvokeAsync(() =>
+                {
+                    loop.Queue.Close();
+                    return true;
+                });
+            }
+            catch (InvalidOperationException ex)
+            {
+                // The queue rejected work before anything closed it: say why, so a rare failure can be diagnosed.
+                Assert.Fail(
+                    $"Iteration {iteration}: the queue was closed before Close was posted. Reason: {loop.Queue.CloseReason}, " +
+                    $"owner alive: {loop.Thread.IsAlive}, loop ended: {loop.LoopEnded.IsCompleted}, rejected workers: {rejected}, " +
+                    $"unexpected: {string.Join("; ", unexpected.Select(e => e.Message))}. {ex.Message}");
+            }
 
             await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             Assert.Empty(unexpected);
@@ -228,9 +239,29 @@ public class DirectNMessageQueueTests
 
         var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         Assert.True(loop.Queue.TryPost(_ => ran.SetResult(), null));
+
+        // Still full for a while: the retry fails and is rescheduled several times before the thread resumes.
+        await Task.Delay(100, TestContext.Current.CancellationToken);
         gate.Set();
 
         await ran.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task CloseIsIdempotentAndRecordsWhyTheQueueClosed()
+    {
+        using var loop = new MessageLoopThread();
+
+        Assert.Equal(QueueCloseReason.None, loop.Queue.CloseReason);
+        await loop.InvokeAsync(() =>
+        {
+            loop.Queue.Close();
+            loop.Queue.Close();
+            return true;
+        });
+
+        Assert.True(loop.Queue.IsClosed);
+        Assert.Equal(QueueCloseReason.Closed, loop.Queue.CloseReason);
     }
 
     private static bool FillThreadMessageQueue(uint nativeThreadId)

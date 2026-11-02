@@ -252,6 +252,11 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
 
     internal HWND WindowHandle => _hwnd;
 
+    internal bool IsAdded => _added;
+
+    // Whether Explorer still has the icon (a modify without changes succeeds only for an existing icon).
+    internal bool IsInNotificationArea() => Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_MODIFY, CreateData());
+
     // Internal so tests can drive the window procedure without Explorer.
     internal void ProcessMessage(uint msg, nint wParam, nint lParam)
     {
@@ -425,8 +430,11 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         {
             if (!_added)
             {
-                // Fails while Explorer isn't running; TaskbarCreated adds it once it is.
-                if (Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_ADD, data))
+                // NIM_ADD fails while Explorer isn't running (TaskbarCreated adds it once it is), and when the icon still exists:
+                // TaskbarCreated is also sent when the taskbar is recreated without losing icons (e.g. a DPI change). Then the
+                // icon is updated instead; otherwise it would be orphaned, never removed by hiding or disposing.
+                if (Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_ADD, data)
+                    || Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_MODIFY, data))
                 {
                     data.Anonymous.uVersion = Constants.NOTIFYICON_VERSION_4;
                     Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_SETVERSION, data);

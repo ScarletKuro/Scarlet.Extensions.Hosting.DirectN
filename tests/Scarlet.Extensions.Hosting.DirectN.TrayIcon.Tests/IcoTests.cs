@@ -71,6 +71,68 @@ public class IcoTests
     public void FromFileRequiresAnExistingFile()
     {
         Assert.Throws<FileNotFoundException>(() => TrayIconImage.FromFile(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".ico")));
+        Assert.Throws<ArgumentException>(() => TrayIconImage.FromFile(string.Empty));
+    }
+
+    [Fact]
+    public void FromFileLoadsTheIconAtTheRequestedSize()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".ico");
+        File.WriteAllBytes(path, Ico.BuildReal(32));
+        try
+        {
+            using var image = TrayIconImage.FromFile(path);
+
+            Assert.NotEqual(0, image.GetHandle(16));
+            Assert.NotEqual(0, image.GetHandle(32));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void AMissingResourceFailsWhenItIsFirstNeeded()
+    {
+        using var image = TrayIconImage.FromResource(12345);
+
+        Assert.Throws<System.ComponentModel.Win32Exception>(() => image.GetHandle(16));
+    }
+
+    [Fact]
+    public void FromApplicationIconUsesTheExecutablesIconResource()
+    {
+        // The test host's own icon (if any): either loads, or fails as a missing resource; never anything else.
+        using var image = TrayIconImage.FromApplicationIcon();
+        var exception = Record.Exception(() => image.GetHandle(16));
+
+        Assert.True(exception is null or System.ComponentModel.Win32Exception, exception?.ToString());
+    }
+
+    [Fact]
+    public unsafe void FromHandleUsesTheHandleAtEverySizeAndOwnsItWhenAsked()
+    {
+        var ico = Ico.BuildReal(16);
+        var range = IcoReader.SelectImage(ico, 16);
+        var (offset, length) = range.GetOffsetAndLength(ico.Length);
+        nint handle;
+        fixed (byte* p = &ico[offset])
+        {
+            handle = NativeMethods.CreateIconFromResourceEx(p, (uint)length, 1, 0x00030000, 16, 16, 0);
+        }
+
+        Assert.NotEqual(0, handle);
+
+        var image = TrayIconImage.FromHandle(handle, ownsHandle: true);
+        Assert.Equal(handle, image.GetHandle(16));
+        Assert.Equal(handle, image.GetHandle(48));
+        image.Dispose();
+        image.Dispose();
+
+        // Owned: destroyed by Dispose, so destroying it again fails.
+        Assert.False(global::DirectN.Functions.DestroyIcon(new global::DirectN.HICON { Value = handle }));
+        Assert.Throws<ArgumentException>(() => TrayIconImage.FromHandle(0, ownsHandle: false));
     }
 
     [Fact]

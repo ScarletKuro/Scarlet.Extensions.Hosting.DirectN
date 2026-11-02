@@ -70,6 +70,15 @@ public class ExecutionContextTests
     }
 
     [Fact]
+    public async Task FlowSuppressedOnBothSidesStillRunsTheWork()
+    {
+        // No context from the caller and none to capture on the UI thread: the work runs as is.
+        using var loop = new MessageLoopThread(suppressFlow: true);
+
+        Assert.Null(await PostWithFlowSuppressed(loop, "suppressed-caller").WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task CultureFlowsWithTheContext()
     {
         using var loop = new MessageLoopThread();

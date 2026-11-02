@@ -9,9 +9,12 @@ internal sealed class MessageLoopThread : IDisposable
 {
     private readonly Thread _thread;
     private readonly TaskCompletionSource<DirectNMessageQueue> _queue = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly bool _suppressFlow;
 
-    public MessageLoopThread()
+    /// <param name="suppressFlow">Suppress ExecutionContext flow on the loop thread for its whole lifetime.</param>
+    public MessageLoopThread(bool suppressFlow = false)
     {
+        _suppressFlow = suppressFlow;
         _thread = new Thread(Run) { IsBackground = true, Name = "Test message loop" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -95,6 +98,12 @@ internal sealed class MessageLoopThread : IDisposable
     private void Run()
     {
         _nativeThreadId = Functions.GetCurrentThreadId();
+        if (_suppressFlow)
+        {
+            // Never undone: the thread ends with flow suppressed.
+            ExecutionContext.SuppressFlow();
+        }
+
         _queue.SetResult(DirectNMessageQueue.GetOrCreateForCurrentThread());
         while (!_stop && Functions.GetMessageW(out var msg, default, 0, 0) > 0)
         {

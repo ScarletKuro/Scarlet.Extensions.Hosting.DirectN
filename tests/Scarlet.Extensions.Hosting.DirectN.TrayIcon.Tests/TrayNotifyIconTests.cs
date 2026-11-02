@@ -158,6 +158,214 @@ public class TrayNotifyIconTests
         icon.ShowContextMenu();
     }
 
+    [Fact]
+    public void LeftClickContextMenuAndKeyboardRequestsWithoutAMenuDoNothing()
+    {
+        using var icon = new TrayNotifyIcon { ShowContextMenuOnLeftClick = true };
+        var events = Record(icon);
+
+        Send(icon, WM_LBUTTONDOWN);
+        Send(icon, WM_LBUTTONUP);
+        Send(icon, WM_CONTEXTMENU);
+        Send(icon, NIN_KEYSELECT);
+
+        Assert.Equal(["MouseDown:Left:1:0:0", "MouseUp:Left:1:0:0", "Click", "MouseClick:Left:1:0:0", "Click"], events);
+        Assert.True(icon.ShowContextMenuOnLeftClick);
+    }
+
+    [Theory]
+    [InlineData(WM_MBUTTONDBLCLK, "Middle")]
+    [InlineData(WM_RBUTTONDBLCLK, "Right")]
+    public void OtherButtonsDoubleClick(uint message, string button)
+    {
+        using var icon = new TrayNotifyIcon();
+        var events = Record(icon);
+
+        Send(icon, message);
+
+        Assert.Equal([$"MouseDoubleClick:{button}:2:0:0", "DoubleClick", $"MouseDown:{button}:2:0:0"], events);
+    }
+
+    [Fact]
+    public void PropertiesRoundTrip()
+    {
+        using var icon = new TrayNotifyIcon();
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        var menu = new TrayMenu();
+
+        icon.Icon = image;
+        icon.ContextMenu = menu;
+        icon.Tag = "tag";
+        icon.Text = "same";
+        icon.Text = "same";
+
+        Assert.Same(image, icon.Icon);
+        Assert.Same(menu, icon.ContextMenu);
+        Assert.Equal("tag", icon.Tag);
+        Assert.Equal("same", icon.Text);
+        Assert.False(icon.Visible);
+    }
+
+    [Fact]
+    public void VisibleIconIsAddedUpdatedAndRemoved()
+    {
+        // Adds a real notification area icon briefly (when Explorer runs), then removes it.
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        using var other = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(32)));
+        using var icon = new TrayNotifyIcon { Icon = image, Text = "Scarlet test icon" };
+
+        icon.Visible = true;
+        Assert.SkipUnless(icon.IsAdded, "No notification area (Explorer isn't running).");
+        Assert.True(icon.IsInNotificationArea());
+
+        icon.Visible = true;
+        icon.Text = "Scarlet test icon, renamed";
+        icon.Icon = other;
+        icon.ShowBalloonTip("Scarlet test", "Balloon", TrayToolTipIcon.Warning);
+
+        // The taskbar was recreated without losing the icon (e.g. a DPI change): it must stay tracked, not be orphaned.
+        icon.ProcessMessage(TaskbarCreatedMessage, 0, 0);
+        Assert.True(icon.IsAdded);
+
+        icon.Visible = false;
+        icon.Visible = false;
+        Assert.False(icon.Visible);
+        Assert.False(icon.IsInNotificationArea());
+    }
+
+    [Fact]
+    public void DisposeRemovesAVisibleIcon()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        var icon = new TrayNotifyIcon { Icon = image, Visible = true };
+        Assert.SkipUnless(icon.IsAdded, "No notification area (Explorer isn't running).");
+
+        icon.Dispose();
+
+        Assert.False(icon.IsAdded);
+    }
+
+    [Fact]
+    public void TaskbarCreatedWhileHiddenDoesNothing()
+    {
+        using var icon = new TrayNotifyIcon();
+
+        icon.ProcessMessage(TaskbarCreatedMessage, 0, 0);
+
+        Assert.False(icon.Visible);
+    }
+
+    [Fact]
+    public async Task ContextMenuOpensRaisesOpeningAndRunsTheChosenItemAfterClosing()
+    {
+        using var icon = new TrayNotifyIcon();
+        var events = new List<string>();
+        var menu = new TrayMenu
+        {
+            Items =
+            {
+                new TrayMenuItem("Disabled") { Enabled = false },
+                new TrayMenuItem("&Choose", (_, _) => events.Add("Clicked")),
+            },
+        };
+        menu.Opening += (_, _) => events.Add("Opening");
+        icon.ContextMenu = menu;
+
+        // The menu runs a modal loop on this thread: choose an item from another thread with its mnemonic.
+        var chooser = Task.Run(ChooseMenuItemByMnemonic, TestContext.Current.CancellationToken);
+        icon.ShowContextMenu();
+        var eventsAfterMenu = events.ToList();
+
+        await chooser.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal(["Opening", "Clicked"], eventsAfterMenu);
+    }
+
+    [Fact]
+    public void DisposeFromAnotherThreadDestroysTheWindowOnItsOwnThread()
+    {
+        var icon = new TrayNotifyIcon();
+        var hwnd = icon.WindowHandle;
+
+        var other = new Thread(icon.Dispose);
+        other.Start();
+        other.Join();
+
+        // The window is destroyed once its own thread processes the request.
+        PumpMessages();
+        Assert.False(Functions.IsWindow(hwnd));
+    }
+
+    [Fact]
+    public void ExceptionsFromEventHandlersAreReportedThroughTheThreadQueue()
+    {
+        var queue = Scarlet.DirectN.Threading.DirectNMessageQueue.GetOrCreateForCurrentThread();
+        Exception? reported = null;
+        queue.UnhandledException += (_, e) =>
+        {
+            reported = e.Exception;
+            e.Handled = true;
+        };
+
+        try
+        {
+            using var icon = new TrayNotifyIcon();
+            icon.Click += (_, _) => throw new FormatException("handler failure");
+
+            // Through the real window procedure, which must not let the exception cross the native boundary.
+            Functions.SendMessageW(icon.WindowHandle, TrayMessage, default, new LPARAM { Value = (nint)WM_LBUTTONUP });
+            PumpMessages();
+
+            Assert.Equal("handler failure", Assert.IsType<FormatException>(reported).Message);
+        }
+        finally
+        {
+            queue.Close();
+        }
+    }
+
+    private static uint TaskbarCreatedMessage { get; } = RegisterWindowMessage("TaskbarCreated");
+
+    private static unsafe uint RegisterWindowMessage(string name)
+    {
+        fixed (char* p = name)
+        {
+            return Functions.RegisterWindowMessageW(new PWSTR { Value = (nint)p });
+        }
+    }
+
+    private static void PumpMessages()
+    {
+        while (Functions.PeekMessageW(out var msg, default, 0, 0, PEEK_MESSAGE_REMOVE_TYPE.PM_REMOVE))
+        {
+            Functions.TranslateMessage(msg);
+            Functions.DispatchMessageW(msg);
+        }
+    }
+
+    private static unsafe void ChooseMenuItemByMnemonic()
+    {
+        const uint WM_CHAR = 0x0102;
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        HWND menuWindow = default;
+        fixed (char* className = "#32768")
+        {
+            while (DateTime.UtcNow < deadline)
+            {
+                menuWindow = Functions.FindWindowW(new PWSTR { Value = (nint)className }, default);
+                if (menuWindow.Value != 0 && Functions.IsWindowVisible(menuWindow))
+                {
+                    break;
+                }
+
+                Thread.Sleep(20);
+            }
+        }
+
+        // The mnemonic of "&Choose".
+        Functions.PostMessageW(menuWindow, WM_CHAR, new WPARAM { Value = 'c' }, default);
+    }
+
     private static List<string> Record(TrayNotifyIcon icon)
     {
         var events = new List<string>();

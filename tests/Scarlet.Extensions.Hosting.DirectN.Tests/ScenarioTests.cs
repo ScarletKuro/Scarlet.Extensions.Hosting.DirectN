@@ -67,6 +67,18 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void CleanupOutlivingTheShutdownTimeoutDoesntHangTheHost()
+    {
+        var result = ScenarioRunner.Run("shutdown-timeout");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnExitStarted|ui",
+            "HostStopped|not-running",
+            "StoppedWithinTimeout|yes");
+    }
+
+    [Fact]
     public void HostStopEndsTheApplicationEvenWhenExitingIsVetoed()
     {
         var result = ScenarioRunner.Run("exit-cancelled");
