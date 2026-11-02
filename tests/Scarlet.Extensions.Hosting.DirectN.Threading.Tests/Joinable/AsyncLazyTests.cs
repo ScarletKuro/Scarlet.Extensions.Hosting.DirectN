@@ -177,7 +177,7 @@ public class AsyncLazyTests : TestBase
         }
     }
 
-    [Fact]
+    [Fact, Trait("GC", "true")]
     public async Task ValueFactoryReleasedAfterExecution()
     {
         WeakReference collectible = await this.ValueFactoryReleasedAfterExecution_Helper();
@@ -194,7 +194,7 @@ public class AsyncLazyTests : TestBase
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    [Trait("TestCategory", "FailsInCloudTest")] // GC reachability: code coverage instrumentation keeps the factory alive.
+    [Trait("GC", "true")]
     public async Task AsyncPumpReleasedAfterExecution(bool throwInValueFactory)
     {
         WeakReference collectible = await this.AsyncPumpReleasedAfterExecution_Helper(throwInValueFactory);

@@ -2881,7 +2881,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
         hiPriFactory.DoModalLoopTillEmptyAndTaskCompleted(outer.Task, this.TimeoutToken);
     }
 
-    [Fact]
+    [Fact, Trait("GC", "true")]
     public void NestedFactoriesCanBeCollected()
     {
         WeakReference weakOuterFactory = this.NestedFactoriesCanBeCollected_Helper();
@@ -3329,6 +3329,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
     [Fact]
     [Trait("TestCategory", "FailsInCloudTest")]
+    [Trait("GC", "true")]
     public void SwitchToMainThreadShouldNotLeakJoinableTaskWhenGetResultRunsFirst()
     {
         WeakReference<object> weakResult = this.SwitchToMainThreadShouldNotLeakJoinableTaskWhenGetResultRunsFirst_Helper();
@@ -3338,7 +3339,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
         Assert.Null(target); // The task's result should be collected unless the JoinableTask is leaked
     }
 
-    [Fact]
+    [Fact, Trait("GC", "true")]
     public void SwitchToMainThreadShouldNotLeakJoinableTaskWhenGetResultRunsLater()
     {
         var cts = new CancellationTokenSource();
@@ -3658,7 +3659,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
         });
     }
 
-    [Fact]
+    [Fact, Trait("GC", "true")]
     public void ExecutionContext_DoesNotLeakJoinableTask()
     {
         var longLivedTaskReleaser = new AsyncManualResetEvent();

@@ -39,6 +39,7 @@ jobs:
   test:
     needs: version
     uses: ./.github/workflows/test.yml
+    secrets: inherit
 
   publish:
     name: Publish release packages
