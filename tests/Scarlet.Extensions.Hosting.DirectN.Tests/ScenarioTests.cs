@@ -67,6 +67,21 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void LaterStartupFailureCleansUpTheApplicationBeforeItsDependenciesAreDisposed()
+    {
+        var result = ScenarioRunner.Run("started-failure");
+
+        result.AssertExitCode(ScenarioRunner.HostFailedExitCode);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "DependentComponentInit|ui",
+            "OnExit|ui",
+            "DependentComponentDispose|ui:dependency-alive",
+            "DependencyDisposed|other",
+            "HostFailed|InvalidOperationException: started failure");
+    }
+
+    [Fact]
     public void WorkPostedBeforeTheUiThreadExistsRunsOnceStarted()
     {
         var result = ScenarioRunner.Run("prestart-post");

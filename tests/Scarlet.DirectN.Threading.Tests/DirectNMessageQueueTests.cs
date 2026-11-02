@@ -120,6 +120,71 @@ public class DirectNMessageQueueTests
     }
 
     [Fact]
+    public async Task PostsAreRejectedWhenTheThreadExitedWithAWakeUpStillPending()
+    {
+        var loop = new MessageLoopThread();
+        await loop.InvokeAsync(() =>
+        {
+            // Leaves a wake-up message in the thread's queue that nothing will ever process.
+            loop.Queue.Post(_ => { }, null);
+            loop.StopWithoutDraining();
+            return true;
+        });
+        loop.Thread.Join(TimeSpan.FromSeconds(10));
+        Assert.False(loop.Thread.IsAlive);
+
+        Assert.False(loop.Queue.TryPost(_ => { }, null));
+        var send = Task.Run(() => loop.Queue.SynchronizationContext.Send(_ => { }, null), TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(send, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Same(send, finished);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => send);
+    }
+
+    [Fact]
+    public void QueueIsCollectableOnceItsThreadHasExited()
+    {
+        var queue = ExitThreadAndForgetQueue();
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.False(queue.IsAlive);
+    }
+
+    [Fact]
+    public async Task CloseReleasesTheQueueAndAbortsPendingSends()
+    {
+        using var loop = new MessageLoopThread();
+        var gate = new ManualResetEventSlim();
+        loop.Queue.Post(_ => gate.Wait(TimeSpan.FromSeconds(10)), null);
+        var currentAfterClose = new TaskCompletionSource<DirectNMessageQueue?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        loop.Queue.Post(_ =>
+        {
+            loop.Queue.Close();
+            currentAfterClose.SetResult(DirectNMessageQueue.Current);
+        }, null);
+        var send = Task.Run(() => loop.Queue.SynchronizationContext.Send(_ => { }, null), TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        Assert.Throws<InvalidOperationException>(loop.Queue.Close);
+        gate.Set();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => send).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.False(loop.Queue.TryPost(_ => { }, null));
+        Assert.Null(await currentAfterClose.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference ExitThreadAndForgetQueue()
+    {
+        var loop = new MessageLoopThread();
+        var queue = new WeakReference(loop.Queue);
+        loop.Dispose();
+        return queue;
+    }
+
+    [Fact]
     public void CreateCopyReturnsTheSameContext()
     {
         using var loop = new MessageLoopThread();

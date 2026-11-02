@@ -40,6 +40,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     /// </remarks>
     /// <param name="d">The work to run.</param>
     /// <param name="state">The state passed to <paramref name="d"/>.</param>
+    /// <exception cref="InvalidOperationException">The queue was closed or its thread has exited before the work ran.</exception>
     public override void Send(SendOrPostCallback d, object? state)
     {
         ArgumentNullException.ThrowIfNull(d);
@@ -50,25 +51,48 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
             return;
         }
 
-        using var done = new ManualResetEventSlim();
-        ExceptionDispatchInfo? error = null;
-        Queue.Post(_ =>
+        var work = new SendWork(d, state);
+        if (!Queue.TryPost(static s => ((SendWork)s!).Run(), work))
+        {
+            throw SendWork.QueueClosed();
+        }
+
+        work.Wait();
+    }
+
+    internal sealed class SendWork(SendOrPostCallback callback, object? state)
+    {
+        private readonly ManualResetEventSlim _done = new();
+        private ExceptionDispatchInfo? _error;
+
+        public static InvalidOperationException QueueClosed() => new("The DirectN UI thread's queue is closed; the work did not run.");
+
+        public void Run()
         {
             try
             {
-                d(state);
+                callback(state);
             }
             catch (Exception ex)
             {
-                error = ExceptionDispatchInfo.Capture(ex);
+                _error = ExceptionDispatchInfo.Capture(ex);
             }
             finally
             {
-                done.Set();
+                _done.Set();
             }
-        }, null);
+        }
 
-        done.Wait();
-        error?.Throw();
+        public void Abandon()
+        {
+            _error = ExceptionDispatchInfo.Capture(QueueClosed());
+            _done.Set();
+        }
+
+        public void Wait()
+        {
+            _done.Wait();
+            _error?.Throw();
+        }
     }
 }

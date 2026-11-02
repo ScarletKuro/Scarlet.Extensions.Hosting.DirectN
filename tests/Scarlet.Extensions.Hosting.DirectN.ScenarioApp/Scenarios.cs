@@ -112,6 +112,13 @@ internal static unsafe partial class Scenarios
                 });
                 return true;
 
+            case "started-failure":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddSingleton<GuardedDependency>();
+                services.AddDirectNComponent<DependentComponent>();
+                services.AddHostedService<FailingStartedService>();
+                return true;
+
             case "post-after-exit":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().HandleApplicationExit());

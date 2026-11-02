@@ -39,9 +39,13 @@ public sealed unsafe class DirectNMessageQueue
     [ThreadStatic]
     private static DirectNMessageQueue? t_current;
 
+    private const int ERROR_INVALID_WINDOW_HANDLE = 1400;
+
     private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _queue = new();
     private readonly HWND _hwnd;
+    private GCHandle _self;
     private int _wakePending;
+    private volatile bool _closed;
 
     private DirectNMessageQueue()
     {
@@ -71,8 +75,10 @@ public sealed unsafe class DirectNMessageQueue
             throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
 
-        // The queue lives for the rest of the thread's lifetime; the window is destroyed by the system when the thread exits.
-        Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(GCHandle.Alloc(this)));
+        // Weak: the thread-static keeps the queue alive while its thread lives, so it becomes collectable when the thread
+        // exits (the system then destroys the window) even if Close was never called.
+        _self = GCHandle.Alloc(this, GCHandleType.Weak);
+        Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(_self));
         _hwnd = hwnd;
     }
 
@@ -135,17 +141,60 @@ public sealed unsafe class DirectNMessageQueue
     /// <param name="callback">The work to run.</param>
     /// <param name="state">The state passed to <paramref name="callback"/>.</param>
     /// <returns>
-    /// <see langword="false"/> when the wake-up message could not be posted, typically because the UI thread has exited.
-    /// The work stays queued but will not run unless something else wakes the queue.
+    /// <see langword="false"/> when the work can't run: the queue was closed or its thread has exited (the work is dropped),
+    /// or the thread's message queue is full.
     /// </returns>
     public bool TryPost(SendOrPostCallback callback, object? state) => TryPost(callback, state, out _);
+
+    /// <summary>
+    /// Closes the queue: work still queued is dropped (pending <see cref="DirectNSynchronizationContext.Send"/> calls throw),
+    /// later posts are rejected, and the message-only window and native handle are released. Call it on the owning thread
+    /// when its message loop has ended for good. Does nothing if already closed.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Called from another thread.</exception>
+    public void Close()
+    {
+        if (!CheckAccess())
+        {
+            throw new InvalidOperationException("A DirectNMessageQueue can only be closed by its own thread.");
+        }
+
+        if (_closed)
+        {
+            return;
+        }
+
+        MarkClosed();
+        Functions.DestroyWindow(_hwnd);
+        _self.Free();
+        if (t_current == this)
+        {
+            t_current = null;
+        }
+    }
 
     private bool TryPost(SendOrPostCallback callback, object? state, out int error)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
+        if (_closed)
+        {
+            error = ERROR_INVALID_WINDOW_HANDLE;
+            return false;
+        }
+
         _queue.Enqueue((callback, state));
-        return Wake(out error);
+        if (Wake(out error))
+        {
+            return true;
+        }
+
+        if (_closed)
+        {
+            DropQueuedWork();
+        }
+
+        return false;
     }
 
     private bool Wake(out int error)
@@ -153,19 +202,49 @@ public sealed unsafe class DirectNMessageQueue
         error = 0;
         if (Interlocked.Exchange(ref _wakePending, 1) == 1)
         {
-            // A wake-up message is already in flight; it will pick up this item too.
-            return true;
+            // A wake-up message is already in flight and will pick up this item too, unless the thread exited before
+            // processing it: then nothing will ever reset the flag.
+            if (Functions.IsWindow(_hwnd))
+            {
+                return true;
+            }
+
+            MarkClosed();
+            error = ERROR_INVALID_WINDOW_HANDLE;
+            return false;
         }
 
         if (!Functions.PostMessageW(_hwnd, WakeMessage, default, default))
         {
-            // Typically the thread has exited (window destroyed) or its message queue is full.
+            // The thread has exited (window destroyed) or its message queue is full.
             error = Marshal.GetLastPInvokeError();
             Interlocked.Exchange(ref _wakePending, 0);
+            if (!Functions.IsWindow(_hwnd))
+            {
+                MarkClosed();
+            }
+
             return false;
         }
 
         return true;
+    }
+
+    private void MarkClosed()
+    {
+        _closed = true;
+        DropQueuedWork();
+    }
+
+    private void DropQueuedWork()
+    {
+        while (_queue.TryDequeue(out var item))
+        {
+            if (item.State is DirectNSynchronizationContext.SendWork send)
+            {
+                send.Abandon();
+            }
+        }
     }
 
     private void ProcessQueue()

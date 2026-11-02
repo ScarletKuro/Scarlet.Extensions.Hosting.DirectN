@@ -198,3 +198,45 @@ internal sealed class PrestartPostService(IDirectNThread thread) : IHostedServic
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
+
+/// <summary>
+/// A service a component uses until it is disposed.
+/// </summary>
+internal sealed class GuardedDependency : IDisposable
+{
+    public bool Disposed { get; private set; }
+
+    public void Dispose()
+    {
+        Disposed = true;
+        Program.Report("DependencyDisposed", Program.Where());
+    }
+}
+
+/// <summary>
+/// Reports whether its dependency is still usable when the UI thread disposes it.
+/// </summary>
+internal sealed class DependentComponent(GuardedDependency dependency) : IDirectNComponent, IDisposable
+{
+    public void InitializeComponent() => Program.Report("DependentComponentInit", Program.Where());
+
+    public void Dispose() => Program.Report("DependentComponentDispose", $"{Program.Where()}:{(dependency.Disposed ? "dependency-disposed" : "dependency-alive")}");
+}
+
+/// <summary>
+/// Fails after the UI thread has started: the host then disposes its services without stopping them.
+/// </summary>
+internal sealed class FailingStartedService : IHostedLifecycleService
+{
+    public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartedAsync(CancellationToken cancellationToken) => throw new InvalidOperationException("started failure");
+
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}

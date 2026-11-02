@@ -299,6 +299,8 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 _queue = null;
             }
 
+            // Work still queued is dropped (a pending Send throws instead of waiting forever) and the window is released.
+            DirectNMessageQueue.Current?.Close();
             DropPendingPosts();
             // Startup did not complete (e.g. the application exited before its loop ran): nothing left to wait for.
             _started.TrySetResult(true);
@@ -432,9 +434,12 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
         {
             components.Dispose();
         }
-        catch (Exception exception)
+        catch (AggregateException exception)
         {
-            _logger.DirectNUnhandledException(exception);
+            foreach (var inner in exception.InnerExceptions)
+            {
+                _logger.DirectNUnhandledException(inner);
+            }
         }
 
         try

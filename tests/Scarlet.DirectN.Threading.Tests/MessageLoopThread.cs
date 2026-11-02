@@ -43,15 +43,30 @@ internal sealed class MessageLoopThread : IDisposable
     {
         if (_thread.IsAlive)
         {
-            Queue.TryPost(_ => Functions.PostQuitMessage(0), null);
+            if (!Queue.TryPost(_ => Functions.PostQuitMessage(0), null))
+            {
+                const uint WM_QUIT = 0x0012;
+                Functions.PostThreadMessageW(_nativeThreadId, WM_QUIT, default, default);
+            }
+
             _thread.Join(TimeSpan.FromSeconds(10));
         }
     }
 
+    /// <summary>
+    /// Ends the loop right after the current message, leaving anything still queued (e.g. a wake-up) unprocessed,
+    /// and lets the thread exit without closing the queue.
+    /// </summary>
+    public void StopWithoutDraining() => _stop = true;
+
+    private volatile bool _stop;
+    private volatile uint _nativeThreadId;
+
     private void Run()
     {
+        _nativeThreadId = Functions.GetCurrentThreadId();
         _queue.SetResult(DirectNMessageQueue.GetOrCreateForCurrentThread());
-        while (Functions.GetMessageW(out var msg, default, 0, 0) > 0)
+        while (!_stop && Functions.GetMessageW(out var msg, default, 0, 0) > 0)
         {
             Functions.TranslateMessage(msg);
             Functions.DispatchMessageW(msg);
