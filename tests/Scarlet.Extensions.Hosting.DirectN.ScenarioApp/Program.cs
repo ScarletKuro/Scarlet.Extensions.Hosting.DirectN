@@ -41,7 +41,24 @@ internal static class Program
         using var host = builder.Build();
         var thread = host.Services.GetRequiredService<IDirectNThread>();
         s_uiThread = thread.MainThread;
-        
+
+        if (scenario == "canceled-during-init")
+        {
+            // Startup is cancelled while a component is still initializing: the message loop must never run.
+            using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+            try
+            {
+                host.StartAsync(cancel.Token).GetAwaiter().GetResult();
+                Report("Started");
+            }
+            catch (OperationCanceledException)
+            {
+                Report("StartCanceled", thread.Context.IsRunning ? "running" : "not-running");
+            }
+
+            return 0;
+        }
+
         try
         {
             host.Run();
@@ -271,4 +288,81 @@ internal sealed class ContextPostService(IDirectNThread thread) : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>
+/// Initializes slower than the host is willing to wait for startup.
+/// </summary>
+internal sealed class SlowComponent : IDirectNComponent, IDisposable
+{
+    public void InitializeComponent()
+    {
+        Program.Report("SlowInitStarted", Program.Where());
+        Thread.Sleep(1500);
+        Program.Report("SlowInitFinished", Program.Where());
+    }
+
+    public void Dispose() => Program.Report("SlowComponentDispose", Program.Where());
+}
+
+/// <summary>
+/// A DirectN window whose window procedure throws for <see cref="FailMessage"/>, and optionally whose Dispose throws.
+/// </summary>
+internal sealed class FaultyWindow(bool throwOnDispose) : global::DirectN.Extensions.Utilities.Window("Scarlet faulty window")
+{
+    public const uint FailMessage = 0x8000 + 77;
+
+    protected override global::DirectN.LRESULT? WindowProc(global::DirectN.HWND hwnd, uint msg, global::DirectN.WPARAM wParam, global::DirectN.LPARAM lParam)
+    {
+        if (msg == FailMessage)
+        {
+            throw new InvalidOperationException("window failure");
+        }
+
+        return base.WindowProc(hwnd, msg, wParam, lParam);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing && throwOnDispose)
+        {
+            throw new InvalidOperationException("window dispose failure");
+        }
+    }
+}
+
+/// <summary>
+/// Creates a <see cref="FaultyWindow"/>; optionally makes it fail before the message loop has run.
+/// </summary>
+internal sealed class FaultyWindowComponent(bool failBeforeStart, bool throwOnDispose) : IDirectNComponent
+{
+    public static FaultyWindow? Window { get; private set; }
+
+    public void InitializeComponent()
+    {
+        Window = new FaultyWindow(throwOnDispose);
+        Program.Report("FaultyWindowCreated", Program.Where());
+        if (failBeforeStart)
+        {
+            // Fails synchronously during initialization, before the message loop has run.
+            global::DirectN.Functions.SendMessageW(Window.Handle, FaultyWindow.FailMessage, default, default);
+        }
+    }
+}
+
+/// <summary>
+/// Throws from Dispose.
+/// </summary>
+internal sealed class ThrowingDisposeComponent : IDirectNComponent, IDisposable
+{
+    public void InitializeComponent()
+    {
+    }
+
+    public void Dispose()
+    {
+        Program.Report("ThrowingDispose", Program.Where());
+        throw new InvalidOperationException("component dispose failure");
+    }
 }

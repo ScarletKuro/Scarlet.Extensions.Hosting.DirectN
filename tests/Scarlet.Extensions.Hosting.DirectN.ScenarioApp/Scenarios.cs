@@ -139,7 +139,76 @@ internal static unsafe partial class Scenarios
                         Program.Report("SendException", ex.Message);
                     }
 
+                    // On the UI thread itself, Send runs inline.
+                    thread.SynchronizationContext.Post(_ => SendAndReport(thread.SynchronizationContext, "SendOnUiThread"), null);
                     sp.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+                });
+                return true;
+
+            case "exit-cancelled":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+                    // An ApplicationExiting handler that vetoes every exit: the host stopping must still end the loop.
+                    options.OnStartup = (_, context) => context.Application!.ApplicationExiting += (_, e) =>
+                    {
+                        Program.Report("ExitVetoed", Program.Where());
+                        e.Cancel = true;
+                    };
+                    options.OnExit = (_, _) => Program.Report("OnExit", Program.Where());
+                });
+                OnStarted(services, sp => sp.GetRequiredService<IHostApplicationLifetime>().StopApplication());
+                return true;
+
+            case "canceled-during-init":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddDirectNComponent<SlowComponent>();
+                services.AddHostedService(sp => new ContextPostService(sp.GetRequiredService<IDirectNThread>()));
+                return true;
+
+            case "directn-error-before-start":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddDirectNComponent(_ => new FaultyWindowComponent(failBeforeStart: true, throwOnDispose: false));
+                return true;
+
+            case "directn-error-after-start":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddDirectNComponent(_ => new FaultyWindowComponent(failBeforeStart: false, throwOnDispose: false));
+                OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().SynchronizationContext.Post(_ =>
+                {
+                    Program.Report("FailingWindow", Program.Where());
+                    global::DirectN.Functions.SendMessageW(FaultyWindowComponent.Window!.Handle, FaultyWindow.FailMessage, default, default);
+                }, null));
+                return true;
+
+            case "cleanup-failures":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    options.OnExit = (_, _) =>
+                    {
+                        Program.Report("OnExit", Program.Where());
+                        throw new InvalidOperationException("exit failure");
+                    };
+                });
+                services.AddDirectNComponent<ProbeComponent>();
+                services.AddDirectNComponent(_ => new FaultyWindowComponent(failBeforeStart: false, throwOnDispose: true));
+                services.AddDirectNComponent<ThrowingDisposeComponent>();
+                OnStarted(services, sp => sp.GetRequiredService<IHostApplicationLifetime>().StopApplication());
+                return true;
+
+            case "unhandled-handler-throws":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                OnStarted(services, sp =>
+                {
+                    var thread = sp.GetRequiredService<IDirectNThread>();
+                    thread.UnhandledException += (_, _) => throw new FormatException("handler failure");
+                    thread.SynchronizationContext.Post(_ =>
+                    {
+                        Program.Report("Throwing", Program.Where());
+                        throw new InvalidOperationException("posted failure");
+                    }, null);
                 });
                 return true;
 

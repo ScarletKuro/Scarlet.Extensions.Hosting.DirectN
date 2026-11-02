@@ -336,7 +336,13 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 queue.UnhandledException += OnQueueUnhandledException;
                 SynchronizationContext.SetSynchronizationContext(queue.SynchronizationContext);
 
+                // Without the dialog, a window procedure error must make DirectN record it and quit the loop (the host then logs
+                // it and stops); otherwise DirectN shows its task dialog from the window procedure, whatever CanShowFatalError says.
                 Application.CanShowFatalError = _options.ShowFatalErrorDialog;
+                if (!_options.ShowFatalErrorDialog)
+                {
+                    Application.ShowFatalErrorsOnUnhandledException = false;
+                }
                 Application.ExitAllOnLastWindowRemoved = _options.ShutdownMode == ShutdownMode.OnLastWindowClose;
                 application = new Application
                 {
@@ -375,6 +381,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             // The first queued work the loop runs (after anything posted during startup): the application has started.
             queue.Post(static state => ((DirectNThread)state!).OnApplicationStarted(), this);
 
+            var startupFailed = false;
             try
             {
                 // Blocks until the application exits.
@@ -382,7 +389,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             }
             catch (Exception exception) when (!_started.Task.IsCompleted)
             {
-                _started.TrySetException(exception);
+                startupFailed = _started.TrySetException(exception);
             }
             finally
             {
@@ -398,12 +405,13 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             if (errors.Count > 0)
             {
                 // The loop ended because of an error before the application had started: fail host startup.
-                _started.TrySetException(errors.Count == 1 ? errors[0] : new AggregateException(errors));
+                startupFailed |= _started.TrySetException(errors.Count == 1 ? errors[0] : new AggregateException(errors));
             }
 
             // The application exited on its own (last window closed, Application.Exit(), an error): stop the host. When the host
-            // is the one stopping, it is already stopping and this does nothing.
-            if (!_disposed && !_stopRequested)
+            // is the one stopping, it is already stopping and this does nothing. Not when startup failed: host startup reports
+            // that failure itself, and stopping now would cancel it first, hiding the exception behind a cancellation.
+            if (!startupFailed && !_disposed && !_stopRequested)
             {
                 _serviceProvider.GetService<IHostApplicationLifetime>()?.StopApplication();
             }

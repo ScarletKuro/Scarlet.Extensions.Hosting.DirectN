@@ -67,6 +67,91 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void HostStopEndsTheApplicationEvenWhenExitingIsVetoed()
+    {
+        var result = ScenarioRunner.Run("exit-cancelled");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "ExitVetoed|ui",
+            "OnExit|ui",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void StartupCancelledDuringInitializationNeverRunsTheMessageLoop()
+    {
+        var result = ScenarioRunner.Run("canceled-during-init");
+
+        result.AssertExitCode(0);
+
+        // No PrestartPost: the work posted before startup never ran, the loop never started.
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "SlowInitStarted|ui",
+            "SlowInitFinished|ui",
+            "OnExit|ui",
+            "SlowComponentDispose|ui",
+            "StartCanceled|not-running");
+    }
+
+    [Fact]
+    public void DirectNErrorBeforeTheLoopRunsFailsHostStartupWithTheError()
+    {
+        var result = ScenarioRunner.Run("directn-error-before-start");
+
+        result.AssertExitCode(ScenarioRunner.HostFailedExitCode);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "FaultyWindowCreated|ui",
+            "OnExit|ui",
+            "HostFailed|InvalidOperationException: window failure");
+    }
+
+    [Fact]
+    public void DirectNErrorAfterStartIsLoggedAndStopsTheHostWithoutADialog()
+    {
+        var result = ScenarioRunner.Run("directn-error-after-start");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "FaultyWindowCreated|ui",
+            "FailingWindow|ui",
+            "OnExit|ui",
+            "HostStopped|not-running");
+        Assert.Contains(result.Output, line => line.Contains("DirectN reported an error", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void CleanupFailuresAreLoggedAndEverythingElseIsStillCleanedUp()
+    {
+        var result = ScenarioRunner.Run("cleanup-failures");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "ComponentInit|ui",
+            "FaultyWindowCreated|ui",
+            "OnExit|ui",
+            "ThrowingDispose|ui",
+            "ComponentDispose|ui",
+            "HostStopped|not-running");
+        Assert.Contains(result.Output, line => line.Contains("window dispose failure", StringComparison.Ordinal));
+        Assert.Contains(result.Output, line => line.Contains("exit failure", StringComparison.Ordinal));
+        Assert.Contains(result.Output, line => line.Contains("component dispose failure", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void UnhandledExceptionHandlerThatThrowsTerminatesTheProcessWithBothExceptions()
+    {
+        var result = ScenarioRunner.Run("unhandled-handler-throws");
+
+        Assert.True(result.ExitCode is not 0 and not ScenarioRunner.HostFailedExitCode, result.Describe());
+        Assert.Contains("Throwing|ui", result.Events);
+        Assert.Contains(result.Output, line => line.Contains("posted failure", StringComparison.Ordinal) && line.Contains("handler failure", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void PostsRunInTheirCallersExecutionContextAlsoWhenPostedBeforeStart()
     {
         var result = ScenarioRunner.Run("execution-context");
@@ -91,6 +176,7 @@ public class ScenarioTests
             "SendBeforeStartRejected|",
             "SendWhileRunningRan|ui",
             "SendException|sent failure",
+            "SendOnUiThreadRan|ui",
             "SendDuringExitRejected|",
             "HostStopped|not-running",
             "SendDuringExitFinished|yes",

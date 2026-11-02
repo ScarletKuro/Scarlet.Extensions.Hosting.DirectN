@@ -77,6 +77,93 @@ public class RegistrationTests
     }
 
     [Fact]
+    public void UseDirectNLifetimeOnHostBuilderWithOptions()
+    {
+        using var host = Host.CreateDefaultBuilder().UseDirectNLifetime(o => o.SuppressStatusMessages = true).Build();
+
+        Assert.IsType<DirectNLifetime>(host.Services.GetRequiredService<IHostLifetime>());
+        Assert.True(host.Services.GetRequiredService<IOptions<DirectNLifetimeOptions>>().Value.SuppressStatusMessages);
+    }
+
+    [Fact]
+    public void RegistrationMethodsRejectNullArguments()
+    {
+        var services = new ServiceCollection();
+        IServiceCollection nullServices = null!;
+        IHostBuilder nullBuilder = null!;
+
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectN());
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectN(_ => { }));
+        Assert.Throws<ArgumentNullException>(() => services.AddDirectN(null!));
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectNComponent<OtherComponent>());
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectNComponent(_ => new OtherComponent()));
+        Assert.Throws<ArgumentNullException>(() => services.AddDirectNComponent<OtherComponent>(null!));
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectNLifetime());
+        Assert.Throws<ArgumentNullException>(() => nullServices.AddDirectNLifetime(_ => { }));
+        Assert.Throws<ArgumentNullException>(() => services.AddDirectNLifetime(null!));
+        Assert.Throws<ArgumentNullException>(() => nullBuilder.UseDirectNLifetime());
+        Assert.Throws<ArgumentNullException>(() => nullBuilder.UseDirectNLifetime(_ => { }));
+        Assert.Throws<ArgumentNullException>(() => Host.CreateDefaultBuilder().UseDirectNLifetime(null!));
+    }
+
+    [Fact]
+    public void LifetimeWithoutLoggerFactoryUsesNoLogger()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        using var host = builder.Build();
+        var services = host.Services;
+
+        using var lifetime = new DirectNLifetime(
+            services.GetRequiredService<IOptions<DirectNLifetimeOptions>>(),
+            services.GetRequiredService<IHostEnvironment>(),
+            services.GetRequiredService<IHostApplicationLifetime>(),
+            services.GetRequiredService<IOptions<HostOptions>>());
+
+        Assert.True(lifetime.WaitForStartAsync(TestContext.Current.CancellationToken).IsCompletedSuccessfully);
+        Assert.True(lifetime.StopAsync(TestContext.Current.CancellationToken).IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public void LifetimeRejectsNullArguments()
+    {
+        using var host = Host.CreateApplicationBuilder().Build();
+        var options = host.Services.GetRequiredService<IOptions<DirectNLifetimeOptions>>();
+        var environment = host.Services.GetRequiredService<IHostEnvironment>();
+        var lifetime = host.Services.GetRequiredService<IHostApplicationLifetime>();
+        var hostOptions = host.Services.GetRequiredService<IOptions<HostOptions>>();
+        var loggerFactory = host.Services.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
+
+        Assert.Throws<ArgumentNullException>(() => new DirectNLifetime(null!, environment, lifetime, hostOptions, loggerFactory));
+        Assert.Throws<ArgumentNullException>(() => new DirectNLifetime(options, null!, lifetime, hostOptions, loggerFactory));
+        Assert.Throws<ArgumentNullException>(() => new DirectNLifetime(options, environment, null!, hostOptions, loggerFactory));
+        Assert.Throws<ArgumentNullException>(() => new DirectNLifetime(options, environment, lifetime, null!, loggerFactory));
+        Assert.Throws<ArgumentNullException>(() => new DirectNLifetime(options, environment, lifetime, hostOptions, null!));
+    }
+
+    [Fact]
+    public async Task StartedAsyncWithCancelledTokenDoesntStartTheUiThread()
+    {
+        using var provider = new ServiceCollection().AddLogging().AddDirectN().BuildServiceProvider();
+        var hostedService = (IHostedLifecycleService)provider.GetServices<IHostedService>().Single(s => s is DirectNHostedService);
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await hostedService.StartedAsync(cancelled.Token);
+
+        Assert.Equal(ThreadState.Unstarted, provider.GetRequiredService<IDirectNThread>().MainThread.ThreadState & ThreadState.Unstarted);
+        await hostedService.StoppingAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public void HostSynchronizationContextCopyIsItself()
+    {
+        using var provider = new ServiceCollection().AddDirectN().BuildServiceProvider();
+        var context = provider.GetRequiredService<IDirectNThread>().SynchronizationContext;
+
+        Assert.Same(context, context.CreateCopy());
+    }
+
+    [Fact]
     public void ProcessExitStopsTheHostWithoutResettingTheExitCode()
     {
         var builder = Host.CreateApplicationBuilder();
