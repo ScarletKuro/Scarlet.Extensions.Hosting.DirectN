@@ -1,0 +1,311 @@
+using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using DirectN;
+
+namespace Scarlet.DirectN.Threading;
+
+/// <summary>
+/// A per-thread work queue for a Win32 UI thread, drained by the thread's message loop.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Work is queued in memory and a single wake-up message is posted to a message-only window owned by the UI thread.
+/// Window messages are dispatched by every message loop on the thread, including modal ones (menus, message boxes,
+/// task dialogs, window move/resize), so queued work never stalls while one of those is open. Thread messages
+/// (<c>PostThreadMessage</c>) would be lost in those loops.
+/// </para>
+/// <para>
+/// There is at most one queue per thread (<see cref="GetOrCreateForCurrentThread"/>), so every component on a UI thread
+/// (the host, a BlazorWebView, the app) shares the same ordering, exception path and <see cref="SynchronizationContext"/>.
+/// </para>
+/// </remarks>
+public sealed unsafe class DirectNMessageQueue
+{
+    private const string WindowClassName = "Scarlet.DirectN.Threading.DirectNMessageQueue";
+
+    // Upper bound of work items run per wake-up so a flood of posts can't starve input and paint messages.
+    private const int MaxItemsPerWakeUp = 256;
+
+    // Parent handle that makes CreateWindowEx create a message-only window.
+    private const nint HWND_MESSAGE = -3;
+
+    private static readonly uint WakeMessage = RegisterWakeMessage();
+    private static readonly Lock ClassRegistrationLock = new();
+    private static bool _classRegistered;
+
+    [ThreadStatic]
+    private static DirectNMessageQueue? t_current;
+
+    private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _queue = new();
+    private readonly HWND _hwnd;
+    private int _wakePending;
+
+    private DirectNMessageQueue()
+    {
+        ManagedThreadId = Environment.CurrentManagedThreadId;
+        Thread = Thread.CurrentThread;
+        SynchronizationContext = new DirectNSynchronizationContext(this);
+
+        EnsureWindowClassRegistered();
+
+        HWND hwnd;
+        fixed (char* className = WindowClassName)
+        {
+            hwnd = Functions.CreateWindowExW(
+                0,
+                new PWSTR { Value = (nint)className },
+                default,
+                0,
+                0, 0, 0, 0,
+                new HWND(HWND_MESSAGE),
+                default,
+                new HINSTANCE { Value = Functions.GetModuleHandleW(default).Value },
+                0);
+        }
+
+        if (hwnd.Value == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        // The queue lives for the rest of the thread's lifetime; the window is destroyed by the system when the thread exits.
+        Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(GCHandle.Alloc(this)));
+        _hwnd = hwnd;
+    }
+
+    /// <summary>
+    /// Raised on the UI thread when queued work throws. Set <see cref="DirectNUnhandledExceptionEventArgs.Handled"/>
+    /// to keep the process alive; otherwise the exception is rethrown as an unhandled exception.
+    /// </summary>
+    public event EventHandler<DirectNUnhandledExceptionEventArgs>? UnhandledException;
+
+    /// <summary>
+    /// Gets the managed thread id of the UI thread that owns this queue.
+    /// </summary>
+    public int ManagedThreadId { get; }
+
+    /// <summary>
+    /// Gets the UI thread that owns this queue.
+    /// </summary>
+    public Thread Thread { get; }
+
+    /// <summary>
+    /// Gets the <see cref="SynchronizationContext"/> that posts to this queue.
+    /// </summary>
+    public DirectNSynchronizationContext SynchronizationContext { get; }
+
+    /// <summary>
+    /// Gets the queue of the current thread, or <see langword="null"/> when the thread has none.
+    /// </summary>
+    public static DirectNMessageQueue? Current => t_current;
+
+    /// <summary>
+    /// Gets the queue of the current thread, creating it (and its message-only window) on first use.
+    /// Must be called on the UI thread, which must run a message loop for queued work to execute.
+    /// </summary>
+    /// <returns>The queue of the current thread.</returns>
+    public static DirectNMessageQueue GetOrCreateForCurrentThread() => t_current ??= new DirectNMessageQueue();
+
+    /// <summary>
+    /// Returns whether the calling thread is the UI thread that owns this queue.
+    /// </summary>
+    /// <returns><see langword="true"/> on the owning thread.</returns>
+    public bool CheckAccess() => Environment.CurrentManagedThreadId == ManagedThreadId;
+
+    /// <summary>
+    /// Queues <paramref name="callback"/> to run on the UI thread.
+    /// </summary>
+    /// <param name="callback">The work to run.</param>
+    /// <param name="state">The state passed to <paramref name="callback"/>.</param>
+    /// <exception cref="Win32Exception">The wake-up message could not be posted, typically because the UI thread has exited.</exception>
+    public void Post(SendOrPostCallback callback, object? state)
+    {
+        if (!TryPost(callback, state, out var error))
+        {
+            throw new Win32Exception(error);
+        }
+    }
+
+    /// <summary>
+    /// Queues <paramref name="callback"/> to run on the UI thread.
+    /// </summary>
+    /// <param name="callback">The work to run.</param>
+    /// <param name="state">The state passed to <paramref name="callback"/>.</param>
+    /// <returns>
+    /// <see langword="false"/> when the wake-up message could not be posted, typically because the UI thread has exited.
+    /// The work stays queued but will not run unless something else wakes the queue.
+    /// </returns>
+    public bool TryPost(SendOrPostCallback callback, object? state) => TryPost(callback, state, out _);
+
+    private bool TryPost(SendOrPostCallback callback, object? state, out int error)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        _queue.Enqueue((callback, state));
+        return Wake(out error);
+    }
+
+    private bool Wake(out int error)
+    {
+        error = 0;
+        if (Interlocked.Exchange(ref _wakePending, 1) == 1)
+        {
+            // A wake-up message is already in flight; it will pick up this item too.
+            return true;
+        }
+
+        if (!Functions.PostMessageW(_hwnd, WakeMessage, default, default))
+        {
+            // Typically the thread has exited (window destroyed) or its message queue is full.
+            error = Marshal.GetLastPInvokeError();
+            Interlocked.Exchange(ref _wakePending, 0);
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ProcessQueue()
+    {
+        Interlocked.Exchange(ref _wakePending, 0);
+
+        var processed = 0;
+        while (processed < MaxItemsPerWakeUp && _queue.TryDequeue(out var item))
+        {
+            processed++;
+            Execute(item.Callback, item.State);
+        }
+
+        if (!_queue.IsEmpty && !Wake(out var error))
+        {
+            RethrowAsUnhandled(new Win32Exception(error));
+        }
+    }
+
+    private void Execute(SendOrPostCallback callback, object? state)
+    {
+        var previous = System.Threading.SynchronizationContext.Current;
+        try
+        {
+            System.Threading.SynchronizationContext.SetSynchronizationContext(SynchronizationContext);
+            callback(state);
+        }
+        catch (Exception ex)
+        {
+            // Never let an exception escape into the native window procedure.
+            ReportUnhandledException(ex);
+        }
+        finally
+        {
+            System.Threading.SynchronizationContext.SetSynchronizationContext(previous);
+        }
+    }
+
+    private void ReportUnhandledException(Exception exception)
+    {
+        try
+        {
+            var args = new DirectNUnhandledExceptionEventArgs(exception);
+            UnhandledException?.Invoke(this, args);
+            if (args.Handled)
+            {
+                return;
+            }
+        }
+        catch (Exception handlerException)
+        {
+            exception = new AggregateException(exception, handlerException);
+        }
+
+        RethrowAsUnhandled(exception);
+    }
+
+    /// <summary>
+    /// Rethrows <paramref name="exception"/> on a thread-pool thread, so it surfaces as an unhandled exception
+    /// (and terminates the process) without crossing a native callback boundary.
+    /// </summary>
+    /// <param name="exception">The exception to rethrow.</param>
+    public static void RethrowAsUnhandled(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        var edi = ExceptionDispatchInfo.Capture(exception);
+        ThreadPool.UnsafeQueueUserWorkItem(static state => ((ExceptionDispatchInfo)state!).Throw(), edi);
+    }
+
+    private static uint RegisterWakeMessage()
+    {
+        uint message;
+        fixed (char* name = WindowClassName)
+        {
+            message = Functions.RegisterWindowMessageW(new PWSTR { Value = (nint)name });
+        }
+
+        if (message == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        return message;
+    }
+
+    private static void EnsureWindowClassRegistered()
+    {
+        lock (ClassRegistrationLock)
+        {
+            if (_classRegistered)
+            {
+                return;
+            }
+
+            fixed (char* className = WindowClassName)
+            {
+                var wc = new WNDCLASSW
+                {
+                    lpfnWndProc = (nint)(delegate* unmanaged[Stdcall]<nint, uint, nint, nint, nint>)&WindowProc,
+                    hInstance = new HINSTANCE { Value = Functions.GetModuleHandleW(default).Value },
+                    lpszClassName = new PWSTR { Value = (nint)className },
+                };
+
+                if (Functions.RegisterClassW(wc) == 0)
+                {
+                    const int ERROR_CLASS_ALREADY_EXISTS = 1410;
+                    var error = Marshal.GetLastPInvokeError();
+                    if (error != ERROR_CLASS_ALREADY_EXISTS)
+                    {
+                        throw new Win32Exception(error);
+                    }
+                }
+            }
+
+            _classRegistered = true;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static nint WindowProc(nint hwnd, uint msg, nint wParam, nint lParam)
+    {
+        if (msg == WakeMessage)
+        {
+            var userData = Functions.GetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA);
+            if (userData != 0 && GCHandle.FromIntPtr(userData).Target is DirectNMessageQueue queue)
+            {
+                try
+                {
+                    queue.ProcessQueue();
+                }
+                catch (Exception ex)
+                {
+                    // Exceptions must not cross the native boundary; Execute already routes work item failures.
+                    RethrowAsUnhandled(ex);
+                }
+            }
+
+            return 0;
+        }
+
+        return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
+    }
+}
