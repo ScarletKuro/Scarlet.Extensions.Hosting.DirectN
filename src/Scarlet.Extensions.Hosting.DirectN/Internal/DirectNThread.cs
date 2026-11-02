@@ -121,7 +121,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 if (_pendingPosts is not { } pendingPosts)
                 {
                     // The UI thread ended (or the host was disposed) before it created its queue.
-                    _logger.DirectNPostDropped();
+                    LogPostDropped();
                     return false;
                 }
 
@@ -146,11 +146,28 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
 
         if (!queue.TryPost(callback, state))
         {
-            _logger.DirectNPostDropped();
+            LogPostDropped();
             return false;
         }
 
         return true;
+    }
+
+    private void LogPostDropped()
+    {
+        // Posting must never throw, also once the host (and its logger factory) has been disposed.
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _logger.DirectNPostDropped();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     /// <summary>

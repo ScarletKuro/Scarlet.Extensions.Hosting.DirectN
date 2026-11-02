@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Scarlet.Extensions.Hosting.DirectN.TrayIcon</PackageId>
+    <PackageTags>directn;hosting;trayicon;notifyicon;win32;aot;nativeaot;scarletkuro</PackageTags>
+    <Description>Notification area (tray) icon for Scarlet.Extensions.Hosting.DirectN: a Native AOT compatible TrayNotifyIcon with WinForms behavior and a native Win32 context menu, hosted on the DirectN UI thread.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
+  </ItemGroup>
+
+</Project>
