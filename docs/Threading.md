@@ -32,8 +32,8 @@ Public types: `JoinableTaskContext`, `JoinableTaskContextNode`, `JoinableTaskFac
 `AwaitExtensions` (`await TaskScheduler.Default`, `SwitchTo`).
 
 ```csharp
-var environment = new AsyncLazy<CoreWebView2Environment>(CreateEnvironmentAsync, jtf);
-var value = await environment.GetValueAsync();
+var settings = new AsyncLazy<Settings>(LoadSettingsAsync, jtf);
+var value = await settings.GetValueAsync();
 ```
 
 ## Differences from vs-threading

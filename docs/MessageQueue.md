@@ -1,9 +1,8 @@
 # Scarlet.DirectN.Threading
 
 The UI-thread work queue and `SynchronizationContext` for DirectN (Win32) apps, Native AOT compatible. Used by
-[Scarlet.Extensions.Hosting.DirectN](../README.md) and meant to be shared with
-`Scarlet.AspNetCore.Components.WebView.Win32Aot`, so a UI thread has **one** queue: one ordering, one exception path and one
-`SynchronizationContext` for the host, the BlazorWebView and the app.
+[Scarlet.Extensions.Hosting.DirectN](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN). There is at most one
+queue per UI thread: one ordering, one exception path and one `SynchronizationContext` for everything on it.
 
 ```csharp
 // On the UI thread (it must run a message loop, e.g. DirectN's Application.Run()):
@@ -43,5 +42,4 @@ queue.Post(_ => window.Text = "Updated", null);
 | `UnhandledException` | Exceptions from queued work. |
 | `RethrowAsUnhandled(exception)` | Surfaces an exception as unhandled without crossing a native callback boundary. |
 
-Ported from `Win32MessageQueue` / `Win32SynchronizationContext` of Scarlet.AspNetCore.Components.WebView.Win32Aot onto
-DirectNAot's interop.
+See the [wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/9.-Message-queue-%F0%9F%93%AC) for details.

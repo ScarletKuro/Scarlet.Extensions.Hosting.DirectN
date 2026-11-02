@@ -7,7 +7,7 @@
 Unofficial implementation of Microsoft.Extensions.Hosting for [DirectN](https://github.com/smourier/DirectNAot) (Win32 / Direct2D) desktop applications, and the successor of [Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Microsoft.Extensions.Hosting.Wpf) for apps moving off WPF. It runs the DirectN UI thread inside the Generic Host and is **Native AOT compatible** end to end: every package is `IsAotCompatible`, and CI publishes the samples, the scenario app and the tests with `PublishAot`.
 This library also has extension packages for thread switching between the UI thread and the thread pool (`JoinableTaskFactory`, `AsyncLazy<T>`) and a tray icon.
 
-### [Changelog](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/CHANGELOG.md) | [Migrating from Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/docs/MigratingFromWpf.md)
+### [Changelog](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/CHANGELOG.md) | [Wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki)
 
 ## NuGet Packages
 
@@ -16,7 +16,7 @@ This library also has extension packages for thread switching between the UI thr
 | **Scarlet.Extensions.Hosting.DirectN** | The main library, with **Microsoft.Extensions.Hosting** for DirectN support. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN/) |
 | **Scarlet.Extensions.Hosting.DirectN.TrayIcon** | An extension enabling tray icon support, with WinForms `NotifyIcon` behavior and a native Win32 menu. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.TrayIcon.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN.TrayIcon/) |
 | **Scarlet.Extensions.Hosting.DirectN.Threading** | An extension enabling thread switching between the UI thread and ThreadPool threads via an AOT-compatible extract of **Microsoft.VisualStudio.Threading** (`JoinableTaskFactory`, `AsyncLazy<T>`). | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.Threading.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN.Threading/) |
-| **Scarlet.DirectN.Threading** | The UI-thread message queue and `SynchronizationContext`, shared with **Scarlet.AspNetCore.Components.WebView.Win32Aot**. Installed with the main library. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.DirectN.Threading.svg)](https://www.nuget.org/packages/Scarlet.DirectN.Threading/) |
+| **Scarlet.DirectN.Threading** | The UI-thread message queue and `SynchronizationContext` under the host. Installed with the main library. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.DirectN.Threading.svg)](https://www.nuget.org/packages/Scarlet.DirectN.Threading/) |
 
 ## Quick Start
 
@@ -106,6 +106,8 @@ handling or console shutdown hints, status messages (turn them off with
 The manifest should declare `PerMonitorV2` DPI awareness and Common Controls 6 (themed menus and dialogs); see
 [the sample's manifest](samples/HostingMinimal/app.manifest).
 
+For the full guide including **components**, **application options**, **thread switching**, **tray icons**, and more, see the **[Wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki)**.
+
 ## Samples
 1. [HostingMinimal](samples/HostingMinimal): Top-level statements with `Host.CreateApplicationBuilder`, a DirectN window created by a component, and a `BackgroundService` updating it through **Threading**.
 2. [HostingTrayIcon](samples/HostingTrayIcon): A windowless tray application (`ShutdownMode.OnExplicitShutdown`) using the **TrayIcon** feature: native menu, balloon tips, and Exit stopping the host.
@@ -114,11 +116,19 @@ Both publish with `PublishAot`.
 
 ## Documentation
 
-- [Hosting](docs/Hosting.md) — Lifecycle, options, components, unhandled exceptions and the full API
-- [Threading](docs/Threading.md) — Switch between the UI thread and background threads
-- [TrayIcon](docs/TrayIcon.md) — System tray icon support
-- [Message queue](docs/MessageQueue.md) — `Scarlet.DirectN.Threading`, the UI-thread queue under the host
-- [Migrating from Extensions.Hosting.Wpf](docs/MigratingFromWpf.md) — API mapping and a before/after example
+Full documentation is available in the **[Wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki)**:
+
+- [Getting Started](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/3.-Getting-started-%F0%9F%9A%80) — Minimal setup guide
+- [Components](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/4.-Components-%F0%9F%A7%A9) — UI-thread objects with constructor injection
+- [Application Options](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/5.-Application-options-%E2%9A%99%EF%B8%8F) — Shutdown mode, startup and exit, unhandled exceptions
+- [DirectN Lifetime](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/6.-DirectN-Lifetime-%E2%8F%B1%EF%B8%8F) — The host lifetime for windowed applications
+- [Threading](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/7.-Threading-extension-%F0%9F%A7%B5) — Switch between UI and background threads
+- [TrayIcon](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/8.-TrayIcon-extension-%F0%9F%94%94) — System tray icon support
+- [Message Queue](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/9.-Message-queue-%F0%9F%93%AC) — The UI-thread queue and its guarantees
+- [Architecture & How It Works](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/10.-Architecture-&-How-it-works-%F0%9F%93%90) — Internal architecture and lifecycle
+- [API Reference](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/11.-API-Reference-%F0%9F%93%9A) — Complete API reference
+- [FAQ & Troubleshooting](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/13.-FAQ-&-Troubleshooting-%E2%9D%93) — Common questions and error solutions
+- [Migrating from Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/14.-Migrating-from-Extensions.Hosting.Wpf-%F0%9F%94%84) — API mapping and a before/after example
 
 ## License
 

@@ -20,7 +20,7 @@ namespace Scarlet.DirectN.Threading;
 /// </para>
 /// <para>
 /// There is at most one queue per thread (<see cref="GetOrCreateForCurrentThread"/>), so every component on a UI thread
-/// (the host, a BlazorWebView, the app) shares the same ordering, exception path and <see cref="SynchronizationContext"/>.
+/// (the host, other libraries, the app) shares the same ordering, exception path and <see cref="SynchronizationContext"/>.
 /// </para>
 /// <para>
 /// Guarantees: <see cref="TryPost"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
