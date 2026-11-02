@@ -31,16 +31,31 @@ jobs:
       - name: Test
         run: >
           dotnet test --solution Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
-          --coverage --coverage-output-format cobertura --results-directory ./coverage
+          --coverage --coverage-output-format cobertura --results-directory ./TestResults
           --filter-not-trait "TestCategory=FailsInCloudTest"
 
+      # Microsoft Code Coverage writes one Cobertura report per test app, named with a bare GUID. Each is renamed to contain
+      # "coverage" because the Codecov CLI discovers reports by filename pattern and does not recognise "*.cobertura.xml".
+      - name: Collect coverage reports
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p coverage
+          i=0
+          for f in TestResults/*.cobertura.xml; do
+            [ -e "$f" ] || continue
+            i=$((i + 1))
+            cp "$f" "coverage/coverage-$i.cobertura.xml"
+          done
+          ls -l coverage
+
       - name: Upload coverage to Codecov
-        if: ${{ !cancelled() }}
+        if: always()
         uses: codecov/codecov-action@v7
         with:
+          directory: ./coverage
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/**/*.cobertura.xml
-          fail_ci_if_error: false
+          fail_ci_if_error: true
 
       # xunit.v3.aot test projects, published as native executables.
       - name: Test libraries on Native AOT
