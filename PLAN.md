@@ -1,5 +1,7 @@
 # Scarlet.Extensions.Hosting.DirectN — Implementation Plan
 
+> **Status (2026-11-02): implemented.** Deviations from the plan below: the tray icon class is `TrayNotifyIcon` (DirectN.Extensions.Utilities already has a `NotifyIcon`); `AwaitExtensions` (`await TaskScheduler.Default`) stays public because Kiisu/Liisu use it; the ScenarioApp doubles as the AOT smoke test; there is no `samples/HostingBlazorWebView` yet, because `Scarlet.AspNetCore.Components.WebView.Win32Aot` doesn't consume `Scarlet.DirectN.Threading` yet (out of scope for this repo).
+
 Goal: host a DirectNAot (Win32 / Direct2D, Native AOT) desktop app with the same
 `Microsoft.Extensions.Hosting` builder model as `Extensions.Hosting.Wpf`, plus
 `JoinableTaskFactory` style thread switching and `AsyncLazy<T>`, without WPF and fully
