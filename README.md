@@ -75,7 +75,9 @@ The DirectN UI thread is created and started once every hosted service has start
 requests. If any hosted service fails to start, the UI is never created; failures while creating it (in `OnStartup` or a
 component) fail host startup instead of crashing the process. Another hosted service that needs the UI thread can post to
 `IDirectNThread.SynchronizationContext` or use `JoinableTaskFactory.SwitchToMainThreadAsync` at any time: work posted
-before the UI thread exists runs once it has started.
+before the UI thread exists runs once it has started. Just don't *wait* for it inside `StartAsync` (awaiting the switch
+there, or `JoinableTaskFactory.Run`): the UI thread only starts after every `StartAsync` has returned, so startup would hang.
+Do such work from `BackgroundService.ExecuteAsync` or `IHostApplicationLifetime.ApplicationStarted` instead.
 
 Started last, the UI is also stopped first: before any hosted service's `StopAsync`, the host waits until the UI thread has
 fully ended (remaining windows closed, `OnExit`, components disposed), up to `HostOptions.ShutdownTimeout`. Application
@@ -103,7 +105,7 @@ handling or console shutdown hints, status messages (turn them off with
 </PropertyGroup>
 ```
 
-The manifest should declare `PerMonitorV2` DPI awareness and Common Controls 6 (themed menus and dialogs); see
+The manifest should declare `PerMonitorV2` DPI awareness and Common Controls 6 (visual styles, required by task dialogs); see
 [the sample's manifest](samples/HostingMinimal/app.manifest).
 
 For the full guide including **components**, **application options**, **thread switching**, **tray icons**, and more, see the **[Wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki)**.

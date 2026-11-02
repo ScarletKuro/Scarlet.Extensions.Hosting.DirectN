@@ -68,6 +68,30 @@ public class IcoTests
     }
 
     [Fact]
+    public void FromStreamRejectsACorruptImageAtAnySize()
+    {
+        // A valid 16x16 image and a corrupt 32x32 one, which only a higher DPI would have used.
+        var valid = Ico.BuildReal(16);
+        var corrupt = new byte[40];
+        var ico = new byte[6 + 32 + (valid.Length - 22) + corrupt.Length];
+        BinaryPrimitives.WriteUInt16LittleEndian(ico.AsSpan(2), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(ico.AsSpan(4), 2);
+        valid.AsSpan(6, 16).CopyTo(ico.AsSpan(6));
+        BinaryPrimitives.WriteUInt32LittleEndian(ico.AsSpan(6 + 12), 38);
+        var second = ico.AsSpan(22, 16);
+        second[0] = 32;
+        second[1] = 32;
+        BinaryPrimitives.WriteUInt16LittleEndian(second[4..], 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(second[6..], 32);
+        BinaryPrimitives.WriteUInt32LittleEndian(second[8..], (uint)corrupt.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(second[12..], (uint)(38 + valid.Length - 22));
+        valid.AsSpan(22).CopyTo(ico.AsSpan(38));
+
+        Assert.Equal(16, Ico.WidthOf(ico, IcoReader.SelectImage(ico, 16)));
+        Assert.Throws<InvalidDataException>(() => TrayIconImage.FromStream(new MemoryStream(ico)));
+    }
+
+    [Fact]
     public void FromFileRequiresAnExistingFile()
     {
         Assert.Throws<FileNotFoundException>(() => TrayIconImage.FromFile(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".ico")));

@@ -18,6 +18,25 @@ internal static class IcoReader
     /// <exception cref="InvalidDataException">Not a valid .ico file.</exception>
     public static Range SelectImage(ReadOnlySpan<byte> ico, int size)
     {
+        var images = ReadDirectory(ico);
+        var best = images[0];
+        foreach (var image in images)
+        {
+            if (IsBetter(image.Width, image.Bits, best.Width, best.Bits, size))
+            {
+                best = image;
+            }
+        }
+
+        return best.Data;
+    }
+
+    /// <summary>
+    /// Reads every directory entry, checking that each image lies inside the file.
+    /// </summary>
+    /// <exception cref="InvalidDataException">Not a valid .ico file.</exception>
+    public static IcoImage[] ReadDirectory(ReadOnlySpan<byte> ico)
+    {
         if (ico.Length < HeaderSize
             || BinaryPrimitives.ReadUInt16LittleEndian(ico) != 0
             || BinaryPrimitives.ReadUInt16LittleEndian(ico[2..]) != 1)
@@ -31,30 +50,24 @@ internal static class IcoReader
             throw new InvalidDataException("The .ico file has no images or a truncated directory.");
         }
 
-        var best = -1;
-        int bestWidth = 0, bestBits = 0;
+        var images = new IcoImage[count];
         for (var i = 0; i < count; i++)
         {
             var entry = ico.Slice(HeaderSize + (i * EntrySize), EntrySize);
-            var width = entry[0] == 0 ? 256 : entry[0];
-            int bits = BinaryPrimitives.ReadUInt16LittleEndian(entry[6..]);
-            if (best < 0 || IsBetter(width, bits, bestWidth, bestBits, size))
+            var length = BinaryPrimitives.ReadUInt32LittleEndian(entry[8..]);
+            var offset = BinaryPrimitives.ReadUInt32LittleEndian(entry[12..]);
+            if (length == 0 || offset > (uint)ico.Length || length > (uint)ico.Length - offset)
             {
-                best = i;
-                bestWidth = width;
-                bestBits = bits;
+                throw new InvalidDataException("The .ico file has an image outside the file.");
             }
+
+            images[i] = new IcoImage(
+                entry[0] == 0 ? 256 : entry[0],
+                BinaryPrimitives.ReadUInt16LittleEndian(entry[6..]),
+                new Range((int)offset, (int)(offset + length)));
         }
 
-        var selected = ico.Slice(HeaderSize + (best * EntrySize), EntrySize);
-        var length = BinaryPrimitives.ReadUInt32LittleEndian(selected[8..]);
-        var offset = BinaryPrimitives.ReadUInt32LittleEndian(selected[12..]);
-        if (length == 0 || offset > (uint)ico.Length || length > (uint)ico.Length - offset)
-        {
-            throw new InvalidDataException("The .ico file has an image outside the file.");
-        }
-
-        return new Range((int)offset, (int)(offset + length));
+        return images;
     }
 
     private static bool IsBetter(int width, int bits, int bestWidth, int bestBits, int size)
@@ -75,3 +88,11 @@ internal static class IcoReader
         return bits > bestBits;
     }
 }
+
+/// <summary>
+/// An image in an .ico file.
+/// </summary>
+/// <param name="Width">The width in pixels.</param>
+/// <param name="Bits">The bits per pixel.</param>
+/// <param name="Data">The image data range (BMP DIB or PNG) in the file.</param>
+internal readonly record struct IcoImage(int Width, int Bits, Range Data);

@@ -16,5 +16,5 @@ First release: Microsoft.Extensions.Hosting for DirectN (Win32 / Direct2D) appli
 - `Scarlet.Extensions.Hosting.DirectN.TrayIcon`: `TrayNotifyIcon` (WinForms `NotifyIcon` behavior, native Win32 menu), `TrayMenu` / `TrayMenuItem`, `TrayIconImage`, `ApplicationInfo`, `AddDirectNTrayIcon`.
 - `Scarlet.DirectN.Threading`: `DirectNMessageQueue` / `DirectNSynchronizationContext`, the UI-thread queue under the host. Work is delivered inside modal loops, runs in the caller's `ExecutionContext`, and `Send` always returns.
 
-[Unreleased]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/compare/HEAD..1.0.0
+[Unreleased]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/compare/1.0.0...HEAD
 [1.0.0]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/releases/tag/1.0.0

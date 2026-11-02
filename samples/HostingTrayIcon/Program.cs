@@ -20,7 +20,7 @@ await builder.Build().RunAsync();
 /// <summary>
 /// The tray icon: left or right click opens the menu; Exit stops the host.
 /// </summary>
-internal sealed class TrayIcon(IDirectNThread thread, JoinableTaskFactory jtf) : ITrayIcon
+internal sealed class TrayIcon(IDirectNThread thread, JoinableTaskFactory jtf, IHostApplicationLifetime lifetime) : ITrayIcon
 {
     private TrayNotifyIcon? _notifyIcon;
     private TrayIconImage? _image;
@@ -51,7 +51,6 @@ internal sealed class TrayIcon(IDirectNThread thread, JoinableTaskFactory jtf) :
             ContextMenu = menu,
             Visible = true,
         };
-        _notifyIcon.BalloonTipClicked += (_, _) => _notifyIcon.ShowContextMenu();
     }
 
     public void Dispose()
@@ -63,13 +62,20 @@ internal sealed class TrayIcon(IDirectNThread thread, JoinableTaskFactory jtf) :
     private async Task DoWorkAsync()
     {
         _statusItem!.Text = "Working...";
+        var stopping = lifetime.ApplicationStopping;
+        try
+        {
+            // Off the UI thread for the work, back on it to update the icon.
+            await TaskScheduler.Default;
+            await Task.Delay(TimeSpan.FromSeconds(2), stopping);
+            await jtf.SwitchToMainThreadAsync(stopping);
 
-        // Off the UI thread for the work, back on it to update the icon.
-        await TaskScheduler.Default;
-        await Task.Delay(TimeSpan.FromSeconds(2));
-        await jtf.SwitchToMainThreadAsync();
-
-        _statusItem.Text = $"Last run {DateTime.Now:T}";
-        _notifyIcon?.ShowBalloonTip("Scarlet tray sample", "The work is done.", TrayToolTipIcon.Info);
+            _statusItem.Text = $"Last run {DateTime.Now:T}";
+            _notifyIcon?.ShowBalloonTip("Scarlet tray sample", "The work is done.", TrayToolTipIcon.Info);
+        }
+        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+        {
+            // The application is exiting.
+        }
     }
 }

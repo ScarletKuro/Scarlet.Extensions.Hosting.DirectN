@@ -7,7 +7,7 @@ namespace Scarlet.Extensions.Hosting.DirectN.TrayIcon;
 
 /// <summary>
 /// An icon for a <see cref="TrayNotifyIcon"/>. Except for <see cref="FromHandle"/>, the image is loaded at the size the notification
-/// area needs for the current DPI, and reloaded when that changes.
+/// area needs for the DPI at the time the icon is added or updated (and again when Explorer restarts or recreates the taskbar).
 /// </summary>
 /// <remarks>A <see cref="TrayNotifyIcon"/> doesn't own its image: dispose the image after the icon.</remarks>
 public sealed unsafe class TrayIconImage : IDisposable
@@ -84,18 +84,28 @@ public sealed unsafe class TrayIconImage : IDisposable
         ico.CopyTo(buffer);
         var bytes = buffer.ToArray();
 
-        // Validate now rather than when the icon is first shown.
-        IcoReader.SelectImage(bytes, 16);
-
-        return new(size =>
+        // Validate every image now rather than when one is first needed, at whatever size the DPI asks for.
+        foreach (var image in IcoReader.ReadDirectory(bytes))
         {
-            var range = IcoReader.SelectImage(bytes, size);
-            var (offset, length) = range.GetOffsetAndLength(bytes.Length);
-            fixed (byte* p = &bytes[offset])
+            var handle = CreateIcon(bytes, image.Data, image.Width);
+            if (handle == 0)
             {
-                return NativeMethods.CreateIconFromResourceEx(p, (uint)length, 1, 0x00030000, size, size, 0);
+                throw new InvalidDataException($"The .ico file has an invalid {image.Width}x{image.Width} image.");
             }
-        });
+
+            Functions.DestroyIcon(new HICON { Value = handle });
+        }
+
+        return new(size => CreateIcon(bytes, IcoReader.SelectImage(bytes, size), size));
+    }
+
+    private static nint CreateIcon(byte[] ico, Range image, int size)
+    {
+        var (offset, length) = image.GetOffsetAndLength(ico.Length);
+        fixed (byte* p = &ico[offset])
+        {
+            return NativeMethods.CreateIconFromResourceEx(p, (uint)length, 1, 0x00030000, size, size, 0);
+        }
     }
 
     /// <summary>

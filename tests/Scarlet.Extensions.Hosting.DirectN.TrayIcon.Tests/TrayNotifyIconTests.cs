@@ -21,7 +21,7 @@ public class TrayNotifyIconTests
         Send(icon, WM_LBUTTONDOWN, 10, 20);
         Send(icon, WM_LBUTTONUP, 10, 20);
 
-        Assert.Equal(["MouseDown:Left:1:10:20", "MouseUp:Left:1:10:20", "Click", "MouseClick:Left:1:10:20"], events);
+        Assert.Equal(["MouseDown:Left:1:10:20", "MouseUp:Left:0:10:20", "Click", "MouseClick:Left:0:10:20"], events);
     }
 
     [Fact]
@@ -37,8 +37,8 @@ public class TrayNotifyIconTests
 
         Assert.Equal(
             [
-                "MouseDown:Left:1:0:0", "MouseUp:Left:1:0:0", "Click", "MouseClick:Left:1:0:0",
-                "MouseDoubleClick:Left:2:0:0", "DoubleClick", "MouseDown:Left:2:0:0", "MouseUp:Left:1:0:0",
+                "MouseDown:Left:1:0:0", "MouseUp:Left:0:0:0", "Click", "MouseClick:Left:0:0:0",
+                "DoubleClick", "MouseDoubleClick:Left:2:0:0", "MouseDown:Left:2:0:0", "MouseUp:Left:0:0:0",
             ],
             events);
     }
@@ -54,7 +54,7 @@ public class TrayNotifyIconTests
         Send(icon, down);
         Send(icon, up);
 
-        Assert.Equal([$"MouseDown:{button}:1:0:0", $"MouseUp:{button}:1:0:0", "Click", $"MouseClick:{button}:1:0:0"], events);
+        Assert.Equal([$"MouseDown:{button}:1:0:0", $"MouseUp:{button}:0:0:0", "Click", $"MouseClick:{button}:0:0:0"], events);
     }
 
     [Fact]
@@ -169,7 +169,7 @@ public class TrayNotifyIconTests
         Send(icon, WM_CONTEXTMENU);
         Send(icon, NIN_KEYSELECT);
 
-        Assert.Equal(["MouseDown:Left:1:0:0", "MouseUp:Left:1:0:0", "Click", "MouseClick:Left:1:0:0", "Click"], events);
+        Assert.Equal(["MouseDown:Left:1:0:0", "MouseUp:Left:0:0:0", "Click", "MouseClick:Left:0:0:0", "Click"], events);
         Assert.True(icon.ShowContextMenuOnLeftClick);
     }
 
@@ -183,7 +183,7 @@ public class TrayNotifyIconTests
 
         Send(icon, message);
 
-        Assert.Equal([$"MouseDoubleClick:{button}:2:0:0", "DoubleClick", $"MouseDown:{button}:2:0:0"], events);
+        Assert.Equal(["DoubleClick", $"MouseDoubleClick:{button}:2:0:0", $"MouseDown:{button}:2:0:0"], events);
     }
 
     [Fact]
@@ -323,6 +323,159 @@ public class TrayNotifyIconTests
         }
     }
 
+    [Theory]
+    [InlineData(new[] { WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CONTEXTMENU })]
+    [InlineData(new[] { WM_CONTEXTMENU })]
+    [InlineData(new[] { NIN_KEYSELECT })]
+    [InlineData(new[] { WM_LBUTTONDOWN, WM_LBUTTONUP })]
+    public async Task TrayMessagesOpenTheContextMenu(uint[] messages)
+    {
+        using var icon = new TrayNotifyIcon { ShowContextMenuOnLeftClick = true };
+        var events = new List<string>();
+        icon.ContextMenu = ChoosableMenu(events);
+
+        await ShowMenuThroughTrayMessages(icon, messages);
+
+        Assert.Equal(["Opening", "Clicked"], events);
+    }
+
+    [Fact]
+    public async Task TheReleaseOfADoubleClickDoesntOpenTheLeftClickMenu()
+    {
+        using var icon = new TrayNotifyIcon { ShowContextMenuOnLeftClick = true };
+        var events = new List<string>();
+        icon.ContextMenu = ChoosableMenu(events);
+        icon.DoubleClick += (_, _) => events.Add("DoubleClick");
+
+        // The first click's menu is chosen; the double-click's release must not open it again.
+        await ShowMenuThroughTrayMessages(icon, WM_LBUTTONDOWN, WM_LBUTTONUP);
+        Send(icon, WM_LBUTTONDBLCLK);
+        Send(icon, WM_LBUTTONUP);
+
+        Assert.Equal(["Opening", "Clicked", "DoubleClick"], events);
+    }
+
+    [Fact]
+    public async Task DisposedWhileTheMenuIsOpenTheChosenItemDoesntRun()
+    {
+        var icon = new TrayNotifyIcon();
+        var hwnd = icon.WindowHandle;
+        var events = new List<string>();
+        icon.ContextMenu = ChoosableMenu(events);
+
+        var disposer = Task.Run(
+            () =>
+            {
+                WaitForMenu();
+                icon.Dispose();
+                ChooseMenuItemByMnemonic();
+            },
+            TestContext.Current.CancellationToken);
+        icon.ShowContextMenu();
+        await disposer.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        PumpMessages();
+
+        Assert.Equal(["Opening"], events);
+        Assert.False(Functions.IsWindow(hwnd));
+    }
+
+    [Fact]
+    public void ExceptionsFromMenuOpeningAreReportedAndTheMenuCanOpenAgain()
+    {
+        var queue = Scarlet.DirectN.Threading.DirectNMessageQueue.GetOrCreateForCurrentThread();
+        var reported = new List<Exception>();
+        queue.UnhandledException += (_, e) =>
+        {
+            reported.Add(e.Exception);
+            e.Handled = true;
+        };
+
+        try
+        {
+            using var icon = new TrayNotifyIcon();
+            var menu = new TrayMenu();
+            menu.Opening += (_, _) => throw new FormatException("opening failure");
+            icon.ContextMenu = menu;
+
+            Functions.SendMessageW(icon.WindowHandle, TrayMessage, default, new LPARAM { Value = (nint)WM_CONTEXTMENU });
+            Functions.SendMessageW(icon.WindowHandle, TrayMessage, default, new LPARAM { Value = (nint)WM_CONTEXTMENU });
+            PumpMessages();
+
+            // Twice: the failed first attempt didn't leave the menu marked as showing.
+            Assert.Equal(2, reported.Count);
+            Assert.All(reported, e => Assert.Equal("opening failure", Assert.IsType<FormatException>(e).Message));
+        }
+        finally
+        {
+            queue.Close();
+        }
+    }
+
+    [Fact]
+    public void ClosingTheWindowFromOutsideDisposesTheIcon()
+    {
+        var icon = new TrayNotifyIcon();
+        var hwnd = icon.WindowHandle;
+
+        Functions.SendMessageW(hwnd, WM_CLOSE, default, default);
+
+        Assert.False(Functions.IsWindow(hwnd));
+        Assert.Throws<ObjectDisposedException>(() => icon.Visible = true);
+        icon.Dispose();
+    }
+
+    [Fact]
+    public void DisposeFromAnotherThreadRemovesAVisibleIconOnItsOwnThread()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        var icon = new TrayNotifyIcon { Icon = image, Visible = true };
+        Assert.SkipUnless(icon.IsAdded, "No notification area (Explorer isn't running).");
+
+        var other = new Thread(icon.Dispose);
+        other.Start();
+        other.Join();
+
+        // Only the owning thread touches the icon: still there until it processes the request.
+        Assert.True(icon.IsAdded);
+        PumpMessages();
+        Assert.False(icon.IsAdded);
+        Assert.False(icon.IsInNotificationArea());
+    }
+
+    [Fact]
+    public void DisposeAfterTheOwningThreadEndedRemovesTheIcon()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        TrayNotifyIcon? icon = null;
+        var owner = new Thread(() => icon = new TrayNotifyIcon { Icon = image, Visible = true });
+        owner.Start();
+        owner.Join();
+        Assert.SkipUnless(icon!.IsAdded, "No notification area (Explorer isn't running).");
+
+        icon.Dispose();
+
+        Assert.False(icon.IsAdded);
+        Assert.False(icon.IsInNotificationArea());
+    }
+
+    [Fact]
+    public void ReaddedAfterExplorerLostTheIcon()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        using var icon = new TrayNotifyIcon { Icon = image, Visible = true };
+        Assert.SkipUnless(icon.IsAdded, "No notification area (Explorer isn't running).");
+
+        // What an Explorer restart looks like: the icon is gone, then TaskbarCreated arrives.
+        var data = new NOTIFYICONDATAW { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NOTIFYICONDATAW>(), hWnd = icon.WindowHandle, uID = icon.Id };
+        Assert.True(Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_DELETE, data));
+        Assert.False(icon.IsInNotificationArea());
+
+        icon.ProcessMessage(TaskbarCreatedMessage, 0, 0);
+
+        Assert.True(icon.IsAdded);
+        Assert.True(icon.IsInNotificationArea());
+    }
+
     private static uint TaskbarCreatedMessage { get; } = RegisterWindowMessage("TaskbarCreated");
 
     private static unsafe uint RegisterWindowMessage(string name)
@@ -342,28 +495,50 @@ public class TrayNotifyIconTests
         }
     }
 
-    private static unsafe void ChooseMenuItemByMnemonic()
+    private static void ChooseMenuItemByMnemonic()
     {
         const uint WM_CHAR = 0x0102;
 
+        // The mnemonic of "&Choose".
+        Functions.PostMessageW(WaitForMenu(), WM_CHAR, new WPARAM { Value = 'c' }, default);
+    }
+
+    private static unsafe HWND WaitForMenu()
+    {
         var deadline = DateTime.UtcNow.AddSeconds(10);
-        HWND menuWindow = default;
         fixed (char* className = "#32768")
         {
             while (DateTime.UtcNow < deadline)
             {
-                menuWindow = Functions.FindWindowW(new PWSTR { Value = (nint)className }, default);
+                var menuWindow = Functions.FindWindowW(new PWSTR { Value = (nint)className }, default);
                 if (menuWindow.Value != 0 && Functions.IsWindowVisible(menuWindow))
                 {
-                    break;
+                    return menuWindow;
                 }
 
                 Thread.Sleep(20);
             }
         }
 
-        // The mnemonic of "&Choose".
-        Functions.PostMessageW(menuWindow, WM_CHAR, new WPARAM { Value = 'c' }, default);
+        throw new TimeoutException("The context menu didn't open.");
+    }
+
+    private static TrayMenu ChoosableMenu(List<string> events)
+    {
+        var menu = new TrayMenu { Items = { new TrayMenuItem("&Choose", (_, _) => events.Add("Clicked")) } };
+        menu.Opening += (_, _) => events.Add("Opening");
+        return menu;
+    }
+
+    private static async Task ShowMenuThroughTrayMessages(TrayNotifyIcon icon, params uint[] messages)
+    {
+        var chooser = Task.Run(ChooseMenuItemByMnemonic, TestContext.Current.CancellationToken);
+        foreach (var message in messages)
+        {
+            Send(icon, message);
+        }
+
+        await chooser.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
     }
 
     private static List<string> Record(TrayNotifyIcon icon)

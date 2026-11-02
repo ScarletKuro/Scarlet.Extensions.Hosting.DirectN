@@ -42,8 +42,12 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     private bool _visible;
     private bool _added;
     private bool _doubleClick;
+    private bool _rightButtonReleased;
     private bool _menuShowing;
-    private bool _disposed;
+
+    // Set once by Dispose, from any thread; read on the owner thread, which then stops using the icon.
+    private volatile bool _disposed;
+    private int _disposeStarted;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TrayNotifyIcon"/> class. Must be called on the UI thread.
@@ -73,7 +77,7 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     /// <summary>Raised when the icon is clicked with the mouse, after <see cref="Click"/>.</summary>
     public event EventHandler<TrayMouseEventArgs>? MouseClick;
 
-    /// <summary>Raised when the icon is double-clicked with the mouse, before <see cref="DoubleClick"/>.</summary>
+    /// <summary>Raised when the icon is double-clicked with the mouse, after <see cref="DoubleClick"/>.</summary>
     public event EventHandler<TrayMouseEventArgs>? MouseDoubleClick;
 
     /// <summary>Raised when a mouse button is pressed over the icon.</summary>
@@ -217,35 +221,33 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     }
 
     /// <summary>
-    /// Removes the icon from the notification area and releases its window. Callable from any thread.
+    /// Removes the icon from the notification area and releases its window. Callable from any thread: from another thread
+    /// the owning thread does it, the next time it processes messages.
     /// </summary>
     public void Dispose()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
         {
             return;
         }
 
         _disposed = true;
-        if (_added)
+
+        // The icon's state belongs to the owning thread: only that thread removes the icon and destroys the window
+        // (in WM_DESTROY, see OnDestroyed), so nothing races with it updating the icon.
+        if (Environment.CurrentManagedThreadId == _threadId)
         {
-            var data = CreateData();
-            Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_DELETE, data);
-            _added = false;
+            Functions.DestroyWindow(_hwnd);
+            return;
         }
 
-        var hwnd = _hwnd;
-        _hwnd = default;
-        if (hwnd.Value != 0)
+        if (!Functions.PostMessageW(_hwnd, WM_CLOSE, default, default) && !IsWindow(_hwnd.Value))
         {
-            // WM_DESTROY frees the GC handle. A window can only be destroyed by its own thread.
-            if (Environment.CurrentManagedThreadId == _threadId)
+            // The owning thread has exited (taking the window with it): nothing else can use the icon any more.
+            RemoveFromNotificationArea();
+            if (_self.IsAllocated)
             {
-                Functions.DestroyWindow(hwnd);
-            }
-            else
-            {
-                Functions.PostMessageW(hwnd, WM_CLOSE, default, default);
+                _self.Free();
             }
         }
     }
@@ -253,6 +255,8 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     internal HWND WindowHandle => _hwnd;
 
     internal bool IsAdded => _added;
+
+    internal uint Id => _id;
 
     // Whether Explorer still has the icon (a modify without changes succeeds only for an existing icon).
     internal bool IsInNotificationArea() => Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_MODIFY, CreateData());
@@ -308,20 +312,23 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
                 break;
             case WM_RBUTTONUP:
                 OnMouseUpCore(TrayMouseButtons.Right, x, y);
+                _rightButtonReleased = true;
                 break;
             case WM_MOUSEMOVE:
                 MouseMove?.Invoke(this, new TrayMouseEventArgs(TrayMouseButtons.None, 0, x, y));
                 break;
             case WM_CONTEXTMENU:
                 // Sent after a right-click and for Shift+F10 / the context menu key.
-                ShowContextMenu(x, y);
+                var fromKeyboard = !_rightButtonReleased;
+                _rightButtonReleased = false;
+                ShowContextMenu(x, y, fromKeyboard);
                 break;
             case NIN_KEYSELECT:
                 // Enter or Space on the focused icon.
                 Click?.Invoke(this, new TrayMouseEventArgs(TrayMouseButtons.None, 0, x, y));
                 if (ShowContextMenuOnLeftClick)
                 {
-                    ShowContextMenu(x, y);
+                    ShowContextMenu(x, y, fromKeyboard: true);
                 }
 
                 break;
@@ -343,8 +350,9 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         var args = new TrayMouseEventArgs(button, clicks, x, y);
         if (clicks == 2)
         {
-            MouseDoubleClick?.Invoke(this, args);
+            // WinForms order: DoubleClick, then MouseDoubleClick.
             DoubleClick?.Invoke(this, args);
+            MouseDoubleClick?.Invoke(this, args);
             _doubleClick = true;
         }
 
@@ -353,7 +361,8 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
 
     private void OnMouseUpCore(TrayMouseButtons button, int x, int y)
     {
-        var args = new TrayMouseEventArgs(button, 1, x, y);
+        // As in WinForms, release events carry no click count.
+        var args = new TrayMouseEventArgs(button, 0, x, y);
         MouseUp?.Invoke(this, args);
 
         // A double-click raises DoubleClick instead of a second Click.
@@ -366,7 +375,7 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         _doubleClick = false;
     }
 
-    private void ShowContextMenu(int x, int y)
+    private void ShowContextMenu(int x, int y, bool fromKeyboard = false)
     {
         if (_contextMenu is not { } menu || _menuShowing || _disposed)
         {
@@ -399,10 +408,36 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
             _menuShowing = false;
         }
 
-        // After the menu has closed, so a handler can show a dialog or the menu again.
-        if (chosen is { Enabled: true, IsSeparator: false } && chosen.Items.Count == 0)
+        // Opened from the keyboard: hand the focus back to the notification area, as the Shell asks.
+        if (fromKeyboard && _added && !_disposed)
+        {
+            Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_SETFOCUS, CreateData());
+        }
+
+        // After the menu has closed, so a handler can show a dialog or the menu again; not once disposed meanwhile.
+        if (!_disposed && chosen is { Enabled: true, IsSeparator: false } && chosen.Items.Count == 0)
         {
             chosen.PerformClick();
+        }
+    }
+
+    private void OnDestroyed()
+    {
+        Interlocked.Exchange(ref _disposeStarted, 1);
+        _disposed = true;
+        RemoveFromNotificationArea();
+        if (_self.IsAllocated)
+        {
+            _self.Free();
+        }
+    }
+
+    private void RemoveFromNotificationArea()
+    {
+        if (_added)
+        {
+            Functions.Shell_NotifyIconW(NOTIFY_ICON_MESSAGE.NIM_DELETE, CreateData());
+            _added = false;
         }
     }
 
@@ -520,6 +555,9 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         }
 
         Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, self);
+
+        // Lets Explorer's TaskbarCreated through when this process runs elevated.
+        ChangeWindowMessageFilterEx(hwnd.Value, TaskbarCreatedMessage, MSGFLT_ALLOW, 0);
         return hwnd;
     }
 
@@ -564,12 +602,9 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         {
             if (msg == WM_DESTROY)
             {
-                // Destroyed after a cross-thread Dispose (WM_CLOSE) or by the thread ending.
+                // Dispose on the owning thread, a cross-thread Dispose (WM_CLOSE), or someone else closing the window.
                 Functions.SetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, 0);
-                if (icon._self.IsAllocated)
-                {
-                    icon._self.Free();
-                }
+                icon.OnDestroyed();
             }
             else
             {

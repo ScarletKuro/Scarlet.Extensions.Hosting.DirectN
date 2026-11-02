@@ -60,6 +60,16 @@ internal static unsafe partial class NativeMethods
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial nint CreateIconFromResourceEx(byte* presbits, uint dwResSize, int fIcon, uint dwVer, int cxDesired, int cyDesired, uint flags);
 
+    public const uint MSGFLT_ALLOW = 1;
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsWindow(nint hwnd);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool ChangeWindowMessageFilterEx(nint hwnd, uint message, uint action, nint changeFilterStruct);
+
     public static short LoWord(nint value) => unchecked((short)(long)value);
 
     public static short HiWord(nint value) => unchecked((short)((long)value >> 16));
