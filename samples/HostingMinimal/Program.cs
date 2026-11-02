@@ -49,18 +49,25 @@ internal sealed partial class ClockService(JoinableTaskFactory jtf, MainWindowHo
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        while (await timer.WaitForNextTickAsync(stoppingToken))
+        try
         {
-            var now = DateTime.Now;
-
-            await jtf.SwitchToMainThreadAsync(stoppingToken);
-            if (holder.Window is { IsDisposed: false } window)
+            while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                window.Text = $"Scarlet.Extensions.Hosting.DirectN - {now:T}";
-            }
+                var now = DateTime.Now;
 
-            await TaskScheduler.Default;
-            LogTick(now);
+                await jtf.SwitchToMainThreadAsync(stoppingToken);
+                if (holder.Window is { IsDisposed: false } window)
+                {
+                    window.Text = $"Scarlet.Extensions.Hosting.DirectN - {now:T}";
+                }
+
+                await TaskScheduler.Default;
+                LogTick(now);
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // The host is stopping (e.g. the window was closed): the normal way out of the loop.
         }
     }
 
