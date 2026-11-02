@@ -236,7 +236,8 @@ public sealed unsafe partial class DirectNMessageQueue
         _wakeRetry.Dispose();
         Functions.DestroyWindow(_hwnd);
         _self.Free();
-        _ownerExit?.Dispose();
+        // Not _ownerExit: a Send accepted before closing may still be about to wait on it (its callback may even have closed the
+        // queue). Its SafeHandle releases the thread handle once the queue is collected.
         GC.SuppressFinalize(this);
         if (t_current == this)
         {

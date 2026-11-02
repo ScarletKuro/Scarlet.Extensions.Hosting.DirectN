@@ -25,7 +25,7 @@ internal sealed unsafe partial class SessionEndWindow : IDisposable
     private HWND _hwnd;
 
     /// <param name="onSessionEnd">
-    /// Called on the UI thread when the session ends. The process may be terminated as soon as it returns.
+    /// Called on the UI thread when the end of the session is confirmed. Windows may end the process once it returns.
     /// </param>
     public SessionEndWindow(Action onSessionEnd)
     {

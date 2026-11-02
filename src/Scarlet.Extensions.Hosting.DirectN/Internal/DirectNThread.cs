@@ -484,7 +484,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
                 _application = application;
                 _components = components;
 
-                // Ending the Windows session ends the process right after it was announced: the application is stopped then.
+                // Once the end of the session is confirmed, Windows may end the process as soon as WM_ENDSESSION returns: stop then.
                 sessionWindow = new SessionEndWindow(OnSessionEnd);
 
                 lock (_stateLock)
@@ -640,7 +640,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
     }
 
     /// <summary>
-    /// The Windows session ends (WM_ENDSESSION, on the UI thread): the process may be terminated as soon as this returns, so the
+    /// The end of the Windows session is confirmed (WM_ENDSESSION, on the UI thread): Windows may end the process once this returns, so the
     /// application is stopped here and now, not through the message loop. Cleans up the application as its exit would, lets
     /// the host stop its other services meanwhile, and keeps running UI-thread work until the host has stopped.
     /// </summary>

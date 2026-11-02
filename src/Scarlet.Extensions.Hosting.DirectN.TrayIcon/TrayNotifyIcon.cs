@@ -50,6 +50,10 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     private volatile bool _disposed;
     private int _disposeStarted;
 
+    // Retries a cross-thread Dispose's close request while the owning thread's message queue is full.
+    private Timer? _closeRetry;
+    private static readonly TimeSpan CloseRetryDelay = TimeSpan.FromMilliseconds(10);
+
     /// <summary>
     /// Initializes a new instance of the <see cref="TrayNotifyIcon"/> class. Must be called on the UI thread.
     /// </summary>
@@ -242,15 +246,53 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
             return;
         }
 
-        if (!Functions.PostMessageW(_hwnd, WM_CLOSE, default, default) && !IsWindow(_hwnd.Value))
+        if (!TryRequestClose())
         {
-            // The owning thread has exited (taking the window with it): nothing else can use the icon any more.
-            RemoveFromNotificationArea();
-            if (_self.IsAllocated)
-            {
-                _self.Free();
-            }
+            // The owning thread's message queue is full: retry until it takes the request (or the thread is gone).
+            _closeRetry = new Timer(
+                static state =>
+                {
+                    var icon = (TrayNotifyIcon)state!;
+                    if (icon.TryRequestClose())
+                    {
+                        icon._closeRetry?.Dispose();
+                    }
+                    else
+                    {
+                        icon._closeRetry?.Change(CloseRetryDelay, Timeout.InfiniteTimeSpan);
+                    }
+                },
+                this,
+                Timeout.Infinite,
+                Timeout.Infinite);
+            _closeRetry.Change(CloseRetryDelay, Timeout.InfiniteTimeSpan);
         }
+    }
+
+    /// <summary>
+    /// Asks the owning thread to destroy the window (WM_CLOSE). Off the owning thread only.
+    /// </summary>
+    /// <returns><see langword="false"/> when the request couldn't be posted yet (the thread's message queue is full).</returns>
+    private bool TryRequestClose()
+    {
+        if (Functions.PostMessageW(_hwnd, WM_CLOSE, default, default))
+        {
+            return true;
+        }
+
+        if (IsWindow(_hwnd.Value))
+        {
+            return false;
+        }
+
+        // The owning thread has exited (taking the window with it): nothing else can use the icon any more.
+        RemoveFromNotificationArea();
+        if (_self.IsAllocated)
+        {
+            _self.Free();
+        }
+
+        return true;
     }
 
     internal HWND WindowHandle => _hwnd;

@@ -387,7 +387,7 @@ internal static unsafe partial class Scenarios
                     context.Send(_ => uiThreadId = Functions.GetCurrentThreadId(), null);
                     var window = FindSessionEndWindow(uiThreadId);
 
-                    // What Windows sends when the user logs off. The process may be terminated once WM_ENDSESSION returns.
+                    // What Windows sends when the user logs off. Windows may end the process once WM_ENDSESSION returns.
                     const uint WM_QUERYENDSESSION = 0x0011, WM_ENDSESSION = 0x0016;
                     var allowed = Functions.SendMessageW(new HWND(window), WM_QUERYENDSESSION, default, default).Value;
                     Program.Report("QueryEndSession", allowed.ToString(System.Globalization.CultureInfo.InvariantCulture));

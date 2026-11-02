@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using DirectN;
 using Scarlet.Extensions.Hosting.DirectN.TrayIcon.Internal;
 using static Scarlet.Extensions.Hosting.DirectN.TrayIcon.Internal.NativeMethods;
@@ -8,7 +10,7 @@ namespace Scarlet.Extensions.Hosting.DirectN.TrayIcon.Tests;
 /// Feeds the tray callback messages Explorer would send (NOTIFYICON_VERSION_4 layout) and checks the WinForms event sequence.
 /// The icon is never made visible, so nothing is added to the real notification area.
 /// </summary>
-public class TrayNotifyIconTests
+public partial class TrayNotifyIconTests
 {
     private const uint TrayMessage = WM_USER + 1024;
 
@@ -256,7 +258,7 @@ public class TrayNotifyIconTests
     }
 
     [Fact]
-    public async Task ContextMenuOpensRaisesOpeningAndRunsTheChosenItemAfterClosing()
+    public void ContextMenuOpensRaisesOpeningAndRunsTheChosenItemAfterClosing()
     {
         using var icon = new TrayNotifyIcon();
         var events = new List<string>();
@@ -272,12 +274,49 @@ public class TrayNotifyIconTests
         icon.ContextMenu = menu;
 
         // The menu runs a modal loop on this thread: choose an item from another thread with its mnemonic.
-        var chooser = Task.Run(ChooseMenuItemByMnemonic, TestContext.Current.CancellationToken);
+        var thread = Functions.GetCurrentThreadId();
+        var chooser = OtherThread.Start(() => ChooseMenuItemByMnemonic(thread));
         icon.ShowContextMenu();
         var eventsAfterMenu = events.ToList();
 
-        await chooser.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        chooser.Join();
         Assert.Equal(["Opening", "Clicked"], eventsAfterMenu);
+    }
+
+    [Fact]
+    public void DisposeFromAnotherThreadWhileTheOwnersMessageQueueIsFullStillRemovesTheIcon()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        var icon = new TrayNotifyIcon { Icon = image, Visible = true };
+        var hwnd = icon.WindowHandle;
+        var added = icon.IsAdded;
+
+        // Fill this thread's message queue (10,000 posted messages by default), so the close request can't be posted.
+        var posted = 0;
+        while (Functions.PostMessageW(hwnd, WM_NULL, default, default))
+        {
+            posted++;
+        }
+
+        Assert.True(posted > 0);
+        var other = new Thread(icon.Dispose);
+        other.Start();
+        other.Join();
+
+        // Draining the queue makes room: the request must still arrive. Synchronous: only this thread can drain its queue.
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (Functions.IsWindow(hwnd) && DateTime.UtcNow < deadline)
+        {
+            PumpMessages();
+            Thread.Sleep(10);
+        }
+
+        Assert.False(Functions.IsWindow(hwnd));
+        if (added)
+        {
+            Assert.False(icon.IsAdded);
+            Assert.False(icon.IsInNotificationArea());
+        }
     }
 
     [Fact]
@@ -328,19 +367,19 @@ public class TrayNotifyIconTests
     [InlineData(new[] { WM_CONTEXTMENU })]
     [InlineData(new[] { NIN_KEYSELECT })]
     [InlineData(new[] { WM_LBUTTONDOWN, WM_LBUTTONUP })]
-    public async Task TrayMessagesOpenTheContextMenu(uint[] messages)
+    public void TrayMessagesOpenTheContextMenu(uint[] messages)
     {
         using var icon = new TrayNotifyIcon { ShowContextMenuOnLeftClick = true };
         var events = new List<string>();
         icon.ContextMenu = ChoosableMenu(events);
 
-        await ShowMenuThroughTrayMessages(icon, messages);
+        ShowMenuThroughTrayMessages(icon, messages);
 
         Assert.Equal(["Opening", "Clicked"], events);
     }
 
     [Fact]
-    public async Task TheReleaseOfADoubleClickDoesntOpenTheLeftClickMenu()
+    public void TheReleaseOfADoubleClickDoesntOpenTheLeftClickMenu()
     {
         using var icon = new TrayNotifyIcon { ShowContextMenuOnLeftClick = true };
         var events = new List<string>();
@@ -348,7 +387,7 @@ public class TrayNotifyIconTests
         icon.DoubleClick += (_, _) => events.Add("DoubleClick");
 
         // The first click's menu is chosen; the double-click's release must not open it again.
-        await ShowMenuThroughTrayMessages(icon, WM_LBUTTONDOWN, WM_LBUTTONUP);
+        ShowMenuThroughTrayMessages(icon, WM_LBUTTONDOWN, WM_LBUTTONUP);
         Send(icon, WM_LBUTTONDBLCLK);
         Send(icon, WM_LBUTTONUP);
 
@@ -356,23 +395,22 @@ public class TrayNotifyIconTests
     }
 
     [Fact]
-    public async Task DisposedWhileTheMenuIsOpenTheChosenItemDoesntRun()
+    public void DisposedWhileTheMenuIsOpenTheChosenItemDoesntRun()
     {
         var icon = new TrayNotifyIcon();
         var hwnd = icon.WindowHandle;
         var events = new List<string>();
         icon.ContextMenu = ChoosableMenu(events);
 
-        var disposer = Task.Run(
-            () =>
-            {
-                WaitForMenu();
-                icon.Dispose();
-                ChooseMenuItemByMnemonic();
-            },
-            TestContext.Current.CancellationToken);
+        var thread = Functions.GetCurrentThreadId();
+        var disposer = OtherThread.Start(() =>
+        {
+            var menu = WaitForMenu(thread);
+            icon.Dispose();
+            ChooseByMnemonic(menu);
+        });
         icon.ShowContextMenu();
-        await disposer.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        disposer.Join();
         PumpMessages();
 
         Assert.Equal(["Opening"], events);
@@ -495,33 +533,59 @@ public class TrayNotifyIconTests
         }
     }
 
-    private static void ChooseMenuItemByMnemonic()
+    private static void ChooseMenuItemByMnemonic(uint menuThreadId) => ChooseByMnemonic(WaitForMenu(menuThreadId));
+
+    private static void ChooseByMnemonic(HWND menu)
     {
         const uint WM_CHAR = 0x0102;
 
         // The mnemonic of "&Choose".
-        Functions.PostMessageW(WaitForMenu(), WM_CHAR, new WPARAM { Value = 'c' }, default);
+        Functions.PostMessageW(menu, WM_CHAR, new WPARAM { Value = 'c' }, default);
     }
 
-    private static unsafe HWND WaitForMenu()
+    /// <summary>
+    /// Waits for the popup menu opened by a thread (only that thread's: never another test's or process's menu).
+    /// </summary>
+    private static unsafe HWND WaitForMenu(uint menuThreadId)
     {
         var deadline = DateTime.UtcNow.AddSeconds(10);
-        fixed (char* className = "#32768")
+        while (DateTime.UtcNow < deadline)
         {
-            while (DateTime.UtcNow < deadline)
+            t_menu = 0;
+            EnumThreadWindows(menuThreadId, &FindVisibleMenu, 0);
+            if (t_menu != 0)
             {
-                var menuWindow = Functions.FindWindowW(new PWSTR { Value = (nint)className }, default);
-                if (menuWindow.Value != 0 && Functions.IsWindowVisible(menuWindow))
-                {
-                    return menuWindow;
-                }
-
-                Thread.Sleep(20);
+                return new HWND(t_menu);
             }
+
+            Thread.Sleep(20);
         }
 
         throw new TimeoutException("The context menu didn't open.");
     }
+
+    [ThreadStatic]
+    private static nint t_menu;
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
+    private static unsafe int FindVisibleMenu(nint hwnd, nint lParam)
+    {
+        var className = stackalloc char[16];
+        var length = GetClassNameW(hwnd, className, 16);
+        if (new ReadOnlySpan<char>(className, length).SequenceEqual("#32768") && Functions.IsWindowVisible(new HWND(hwnd)))
+        {
+            t_menu = hwnd;
+            return 0;
+        }
+
+        return 1;
+    }
+
+    [LibraryImport("user32.dll")]
+    private static unsafe partial int EnumThreadWindows(uint threadId, delegate* unmanaged[Stdcall]<nint, nint, int> callback, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    private static unsafe partial int GetClassNameW(nint hwnd, char* className, int maxCount);
 
     private static TrayMenu ChoosableMenu(List<string> events)
     {
@@ -530,15 +594,16 @@ public class TrayNotifyIconTests
         return menu;
     }
 
-    private static async Task ShowMenuThroughTrayMessages(TrayNotifyIcon icon, params uint[] messages)
+    private static void ShowMenuThroughTrayMessages(TrayNotifyIcon icon, params uint[] messages)
     {
-        var chooser = Task.Run(ChooseMenuItemByMnemonic, TestContext.Current.CancellationToken);
+        var thread = Functions.GetCurrentThreadId();
+        var chooser = OtherThread.Start(() => ChooseMenuItemByMnemonic(thread));
         foreach (var message in messages)
         {
             Send(icon, message);
         }
 
-        await chooser.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        chooser.Join();
     }
 
     private static List<string> Record(TrayNotifyIcon icon)
@@ -563,5 +628,50 @@ public class TrayNotifyIconTests
         // NOTIFYICON_VERSION_4: LOWORD(lParam) is the event, HIWORD the icon id; wParam holds the anchor point.
         var wParam = (nint)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
         icon.ProcessMessage(TrayMessage, wParam, (nint)message);
+    }
+}
+
+/// <summary>
+/// A dedicated thread (a pool thread could be the test's own), whose exception is rethrown by <see cref="Join"/>.
+/// </summary>
+internal sealed class OtherThread
+{
+    private readonly Thread _thread;
+    private Exception? _error;
+
+    private OtherThread(Action action)
+    {
+        _thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+#pragma warning disable CA1031 // Rethrown by Join.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                _error = ex;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+    }
+
+    public static OtherThread Start(Action action)
+    {
+        var thread = new OtherThread(action);
+        thread._thread.Start();
+        return thread;
+    }
+
+    public void Join()
+    {
+        Assert.True(_thread.Join(TimeSpan.FromSeconds(15)), "The other thread didn't finish.");
+        if (_error is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(_error);
+        }
     }
 }
