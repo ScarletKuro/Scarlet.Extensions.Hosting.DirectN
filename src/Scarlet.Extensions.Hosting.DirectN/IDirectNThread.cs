@@ -1,0 +1,39 @@
+using Scarlet.DirectN.Threading;
+
+namespace Scarlet.Extensions.Hosting.DirectN;
+
+/// <summary>
+/// The DirectN UI thread run by the host.
+/// </summary>
+public interface IDirectNThread
+{
+    /// <summary>
+    /// Gets the UI thread. It exists (unstarted) before the host starts, so it can be handed to e.g. a
+    /// <c>JoinableTaskContext</c> while services are being constructed.
+    /// </summary>
+    Thread MainThread { get; }
+
+    /// <summary>
+    /// Gets a <see cref="SynchronizationContext"/> that runs work on the UI thread. Usable at any time: work posted before the
+    /// UI thread has started runs once it has started; work posted after it has ended is dropped (and logged), never thrown.
+    /// </summary>
+    SynchronizationContext SynchronizationContext { get; }
+
+    /// <summary>
+    /// Gets the state of the DirectN application.
+    /// </summary>
+    IDirectNContext Context { get; }
+
+    /// <summary>
+    /// Stops the host, which exits the DirectN application. Callable from any thread, e.g. from a tray icon's Exit item.
+    /// Ignored when the application isn't running.
+    /// </summary>
+    void HandleApplicationExit();
+
+    /// <summary>
+    /// Raised on the UI thread when work posted to it throws. Set <see cref="DirectNUnhandledExceptionEventArgs.Handled"/>
+    /// to keep the application running; otherwise the exception is logged and terminates the process
+    /// (like WPF's <c>DispatcherUnhandledException</c>).
+    /// </summary>
+    event EventHandler<DirectNUnhandledExceptionEventArgs>? UnhandledException;
+}

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Scarlet.Extensions.Hosting.DirectN</PackageId>
+    <PackageTags>directn;hosting;generichost;dependencyinjection;win32;aot;nativeaot;scarletkuro</PackageTags>
+    <Description>Microsoft.Extensions.Hosting (Generic Host) integration for DirectN (Win32/Direct2D) desktop apps. Runs the DirectN UI thread inside the host, Native AOT compatible.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DirectNAot" />
+    <PackageReference Include="DirectNAot.Extensions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Scarlet.DirectN.Threading\Scarlet.DirectN.Threading.csproj" />
+  </ItemGroup>
+
+</Project>
