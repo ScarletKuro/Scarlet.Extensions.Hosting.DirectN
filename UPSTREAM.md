@@ -25,6 +25,7 @@ The JoinableTask machinery and `AsyncLazy<T>`. Public types (names and members i
 - `JoinableTaskCreationOptions`
 - `JoinableTaskContextException`
 - `AsyncLazy<T>` (+ nested `RevertRelevance`)
+- `AwaitExtensions` (`await TaskScheduler.Default`, `SwitchTo`, `ConfigureAwaitRunInline` and their awaitables)
 
 Everything else is `internal`.
 
@@ -57,7 +58,7 @@ Original paths are relative to the upstream repository root. All library files: 
 | ``AsyncLazy`1.cs`` | ``AsyncLazy`1.cs`` | `AsyncLocal<object?>` for nullable correctness; `DisposeValueAsync` drops the VS `IAsyncDisposable` branch (only `System.IAsyncDisposable`/`IDisposable`). |
 | `AsyncManualResetEvent.cs` | same | `public` → `internal`. |
 | ``AsyncQueue`1.cs`` | same | `public` → `internal`. |
-| `AwaitExtensions.cs` | same | `internal`; only `GetAwaiter(TaskScheduler)`, `SwitchTo`, `ConfigureAwaitRunInline` and their awaitables kept; registry/process/WaitHandle/`SynchronizationContext` awaiters, `ConfigureAwait(YieldAwaitable)`, `ConfigureAwaitForAggregateException` removed; `#if NETFRAMEWORK` branches removed. |
+| `AwaitExtensions.cs` | same | Kept `public` (consumers use `await TaskScheduler.Default`); only `GetAwaiter(TaskScheduler)`, `SwitchTo`, `ConfigureAwaitRunInline` and their awaitables kept; registry/process/WaitHandle/`SynchronizationContext` awaiters, `ConfigureAwait(YieldAwaitable)`, `ConfigureAwaitForAggregateException` removed; `#if NETFRAMEWORK` branches removed. |
 | `EmptyStruct.cs` | same | — |
 | `IJoinableTaskDependent.cs` | same | — |
 | `InlineResumable.cs` | same | — |

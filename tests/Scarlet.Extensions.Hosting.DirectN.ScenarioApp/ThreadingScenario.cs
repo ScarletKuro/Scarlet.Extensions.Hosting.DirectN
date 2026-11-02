@@ -56,21 +56,6 @@ internal static class ThreadingScenario
         Program.Report("BackToBackground", Program.Where());
         lifetime.StopApplication();
     }
-
-    private static TaskSchedulerAwaiter GetAwaiter(this TaskScheduler scheduler) => new(scheduler);
-
-    private readonly struct TaskSchedulerAwaiter(TaskScheduler scheduler) : System.Runtime.CompilerServices.ICriticalNotifyCompletion
-    {
-        public bool IsCompleted => false;
-
-        public void GetResult()
-        {
-        }
-
-        public void OnCompleted(Action continuation) => Task.Factory.StartNew(continuation, CancellationToken.None, TaskCreationOptions.None, scheduler);
-
-        public void UnsafeOnCompleted(Action continuation) => OnCompleted(continuation);
-    }
 }
 
 /// <summary>

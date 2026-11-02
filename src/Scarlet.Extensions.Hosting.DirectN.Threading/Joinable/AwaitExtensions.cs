@@ -15,9 +15,9 @@ using System.Threading.Tasks;
 namespace Scarlet.Extensions.Hosting.DirectN.Threading;
 
 /// <summary>
-/// Extension methods and awaitables for .NET 4.5.
+/// Extension methods and awaitables, e.g. <c>await TaskScheduler.Default</c> to continue on the thread pool.
 /// </summary>
-internal static partial class AwaitExtensions
+public static partial class AwaitExtensions
 {
     /// <summary>
     /// Gets an awaiter that schedules continuations on the specified scheduler.
