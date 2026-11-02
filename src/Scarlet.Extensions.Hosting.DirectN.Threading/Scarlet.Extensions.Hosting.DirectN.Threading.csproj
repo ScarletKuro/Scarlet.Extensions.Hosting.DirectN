@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Scarlet.Extensions.Hosting.DirectN.Threading</PackageId>
+    <PackageTags>directn;hosting;threading;joinabletaskfactory;asynclazy;win32;aot;nativeaot;scarletkuro</PackageTags>
+    <Description>Thread switching for Scarlet.Extensions.Hosting.DirectN: JoinableTaskFactory and AsyncLazy bound to the DirectN UI thread. Contains a trimmed, Native AOT compatible extract of Microsoft.VisualStudio.Threading (MIT); not affiliated with Microsoft.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\LICENSE-3RD-PARTY.txt" Pack="true" PackagePath="" Visible="false" />
+  </ItemGroup>
+
+</Project>

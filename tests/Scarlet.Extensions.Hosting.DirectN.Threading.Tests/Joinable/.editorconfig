@@ -1,0 +1,9 @@
+# Analyzer relaxations for the tests ported from microsoft/vs-threading (see UPSTREAM.md).
+# The upstream tests intentionally block on tasks, use ConfigureAwait and use their own timeout tokens.
+[*.cs]
+# xUnit1051: Use TestContext.Current.CancellationToken (upstream uses its own TimeoutToken).
+dotnet_diagnostic.xUnit1051.severity = none
+# xUnit1031: Do not use blocking task operations in test method (exercising sync-over-async is the point of these tests).
+dotnet_diagnostic.xUnit1031.severity = none
+# xUnit1030: Do not call ConfigureAwait in test method.
+dotnet_diagnostic.xUnit1030.severity = none
