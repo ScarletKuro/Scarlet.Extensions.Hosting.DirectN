@@ -195,7 +195,7 @@ public sealed unsafe partial class DirectNMessageQueue
         // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop it here.
         if (Volatile.Read(ref _closed) != 0)
         {
-            DropQueuedWork();
+            AbandonQueuedWork();
             return false;
         }
 
@@ -215,11 +215,13 @@ public sealed unsafe partial class DirectNMessageQueue
             throw new InvalidOperationException("A DirectNMessageQueue can only be closed by its own thread.");
         }
 
-        if (!MarkClosed())
+        // 1. Logical closing: reject new work and abandon what is queued (the same as when the owner is found gone).
+        if (!StopAcceptingWork())
         {
             return;
         }
 
+        // 2. Release the native resources: only here, on the owner thread, and only once.
         _wakeRetry.Dispose();
         Functions.DestroyWindow(_hwnd);
         _self.Free();
@@ -262,7 +264,7 @@ public sealed unsafe partial class DirectNMessageQueue
         }
 
         // The owner exited without running the work (it can't exit while running it), so it never will.
-        MarkClosed();
+        StopAcceptingWork();
         done.Wait();
     }
 
@@ -316,19 +318,28 @@ public sealed unsafe partial class DirectNMessageQueue
             return false;
         }
 
-        MarkClosed();
+        StopAcceptingWork();
         return true;
     }
 
+    /// <summary>
+    /// Logical closing, callable from any thread (by <see cref="Close"/>, or when the owner thread is found gone): rejects all
+    /// later work and abandons what is queued. Never touches the native resources; only <see cref="Close"/> releases those,
+    /// on the owner thread.
+    /// </summary>
     /// <returns><see langword="true"/> for the call that closed the queue.</returns>
-    private bool MarkClosed()
+    private bool StopAcceptingWork()
     {
         var first = Interlocked.Exchange(ref _closed, 1) == 0;
-        DropQueuedWork();
+        AbandonQueuedWork();
         return first;
     }
 
-    private void DropQueuedWork()
+    /// <summary>
+    /// Removes everything queued without running it. A pending cross-thread Send is completed with an exception, so its
+    /// caller never waits forever; posted work is simply dropped.
+    /// </summary>
+    private void AbandonQueuedWork()
     {
         while (_queue.TryDequeue(out var item))
         {

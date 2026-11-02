@@ -530,7 +530,15 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
 
         public ExecutionContext? Context => context;
 
-        public void RunInCapturedContext() => ExecutionContext.Run(context!, static s => ((PendingPost)s!).Callback(((PendingPost)s!).State), this);
+        /// <summary>
+        /// Runs the callback in the poster's ExecutionContext. Only used when one was captured (flow wasn't suppressed).
+        /// </summary>
+        public void RunInCapturedContext()
+        {
+            ExecutionContext.Run(context!, static state => ((PendingPost)state!).Invoke(), this);
+        }
+
+        private void Invoke() => callback(state);
     }
 
     private void InitializeComponents(DisposableList<IDirectNComponent> components)
