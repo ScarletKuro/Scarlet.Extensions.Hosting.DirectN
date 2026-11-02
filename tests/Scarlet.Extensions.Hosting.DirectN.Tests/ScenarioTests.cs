@@ -67,6 +67,22 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void SendAlwaysReturnsBeforeDuringAndAfterTheUiThreadRuns()
+    {
+        var result = ScenarioRunner.Run("send");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "SendBeforeStartRejected|",
+            "SendWhileRunningRan|ui",
+            "SendException|sent failure",
+            "SendDuringExitRejected|",
+            "HostStopped|not-running",
+            "SendDuringExitFinished|yes",
+            "SendAfterExitRejected|");
+    }
+
+    [Fact]
     public void LaterStartupFailureCleansUpTheApplicationBeforeItsDependenciesAreDisposed()
     {
         var result = ScenarioRunner.Run("started-failure");

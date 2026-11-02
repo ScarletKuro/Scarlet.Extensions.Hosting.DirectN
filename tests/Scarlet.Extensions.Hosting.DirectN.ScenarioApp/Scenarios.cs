@@ -112,6 +112,37 @@ internal static unsafe partial class Scenarios
                 });
                 return true;
 
+            case "send":
+                services.AddDirectN(options =>
+                {
+                    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+                    // A Send queued while the loop no longer runs (OnExit) must be released by the shutdown, not hang.
+                    options.OnExit = (sp, _) =>
+                    {
+                        var context = sp.GetRequiredService<IDirectNThread>().SynchronizationContext;
+                        s_sendDuringExit = Task.Run(() => SendAndReport(context, "SendDuringExit"));
+                        Thread.Sleep(300);
+                    };
+                });
+                services.AddHostedService(sp => new SendBeforeStartService(sp.GetRequiredService<IDirectNThread>()));
+                OnStarted(services, sp =>
+                {
+                    var thread = sp.GetRequiredService<IDirectNThread>();
+                    SendAndReport(thread.SynchronizationContext, "SendWhileRunning");
+                    try
+                    {
+                        thread.SynchronizationContext.Send(_ => throw new FormatException("sent failure"), null);
+                    }
+                    catch (FormatException ex)
+                    {
+                        Program.Report("SendException", ex.Message);
+                    }
+
+                    sp.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+                });
+                return true;
+
             case "started-failure":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 services.AddSingleton<GuardedDependency>();
@@ -145,6 +176,26 @@ internal static unsafe partial class Scenarios
         {
             thread.SynchronizationContext.Post(_ => Program.Report("RanAfterExit"), null);
             Program.Report("PostAfterExit", "no-throw");
+        }
+
+        if (scenario == "send")
+        {
+            Program.Report("SendDuringExitFinished", s_sendDuringExit!.Wait(TimeSpan.FromSeconds(10)) ? "yes" : "hung");
+            SendAndReport(thread.SynchronizationContext, "SendAfterExit");
+        }
+    }
+
+    private static Task? s_sendDuringExit;
+
+    internal static void SendAndReport(SynchronizationContext context, string name)
+    {
+        try
+        {
+            context.Send(_ => Program.Report($"{name}Ran", Program.Where()), null);
+        }
+        catch (InvalidOperationException)
+        {
+            Program.Report($"{name}Rejected");
         }
     }
 

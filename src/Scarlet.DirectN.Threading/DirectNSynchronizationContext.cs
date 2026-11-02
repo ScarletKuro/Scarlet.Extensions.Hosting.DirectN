@@ -35,8 +35,9 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     /// Runs <paramref name="d"/> on the UI thread and waits for it. Runs inline when called on the UI thread.
     /// </summary>
     /// <remarks>
-    /// Blocks the calling thread until the UI thread processes the work. Calling it from a thread the UI thread
-    /// is itself waiting on deadlocks.
+    /// Blocks the calling thread until the UI thread processes the work. It always returns: if the queue is closed or its
+    /// thread exits before running the work, it throws instead of waiting forever. Calling it from a thread the UI thread is
+    /// itself waiting on deadlocks, as with any Send.
     /// </remarks>
     /// <param name="d">The work to run.</param>
     /// <param name="state">The state passed to <paramref name="d"/>.</param>
@@ -54,21 +55,30 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
         var work = new SendWork(d, state);
         if (!Queue.TryPost(static s => ((SendWork)s!).Run(), work))
         {
-            throw SendWork.QueueClosed();
+            throw DirectNMessageQueue.QueueClosedException();
         }
 
-        work.Wait();
+        Queue.WaitForSend(work.Done);
+        work.ThrowIfFailed();
     }
 
+    /// <summary>
+    /// The queued item of a cross-thread Send: completed exactly once, by running it or by the queue dropping it.
+    /// </summary>
     internal sealed class SendWork(SendOrPostCallback callback, object? state)
     {
-        private readonly ManualResetEventSlim _done = new();
         private ExceptionDispatchInfo? _error;
+        private int _completed;
 
-        public static InvalidOperationException QueueClosed() => new("The DirectN UI thread's queue is closed; the work did not run.");
+        public ManualResetEventSlim Done { get; } = new();
 
         public void Run()
         {
+            if (Interlocked.Exchange(ref _completed, 1) != 0)
+            {
+                return;
+            }
+
             try
             {
                 callback(state);
@@ -79,20 +89,21 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
             }
             finally
             {
-                _done.Set();
+                Done.Set();
             }
         }
 
         public void Abandon()
         {
-            _error = ExceptionDispatchInfo.Capture(QueueClosed());
-            _done.Set();
+            if (Interlocked.Exchange(ref _completed, 1) != 0)
+            {
+                return;
+            }
+
+            _error = ExceptionDispatchInfo.Capture(DirectNMessageQueue.QueueClosedException());
+            Done.Set();
         }
 
-        public void Wait()
-        {
-            _done.Wait();
-            _error?.Throw();
-        }
+        public void ThrowIfFailed() => _error?.Throw();
     }
 }

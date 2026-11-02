@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using DirectN.Extensions.Utilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -90,6 +89,20 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     /// Starts the UI thread. Called by <see cref="DirectNHostedService"/> at the right point of the host lifecycle.
     /// </summary>
     internal void Start() => MainThread.Start();
+
+    /// <summary>
+    /// Gets the UI thread's queue while it exists (from its creation until the UI thread ends), else <see langword="null"/>.
+    /// </summary>
+    internal DirectNMessageQueue? CurrentQueue
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _queue;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public void HandleApplicationExit()
@@ -498,7 +511,10 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
 
         foreach (var (callback, state) in pendingPosts)
         {
-            queue.Post(callback, state);
+            if (!queue.TryPost(callback, state))
+            {
+                LogPostDropped();
+            }
         }
     }
 
@@ -536,6 +552,11 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             thread.Post(d, state);
         }
 
+        /// <summary>
+        /// Runs inline on the UI thread; otherwise hands the work to the queue's Send, which always returns (the work ran, or
+        /// it throws because the queue closed first). Before the UI thread has created its queue it throws instead of
+        /// blocking: a Send from a hosted service's StartAsync would otherwise deadlock, the UI thread starting after it.
+        /// </summary>
         public override void Send(SendOrPostCallback d, object? state)
         {
             ArgumentNullException.ThrowIfNull(d);
@@ -546,33 +567,13 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 return;
             }
 
-            using var done = new ManualResetEventSlim();
-            ExceptionDispatchInfo? error = null;
-            var posted = thread.Post(_ =>
+            if (thread.CurrentQueue is not { } queue)
             {
-                try
-                {
-                    d(state);
-                }
-#pragma warning disable CA1031 // Rethrown on the sending thread.
-                catch (Exception ex)
-#pragma warning restore CA1031
-                {
-                    error = ExceptionDispatchInfo.Capture(ex);
-                }
-                finally
-                {
-                    done.Set();
-                }
-            }, null);
-
-            if (!posted)
-            {
-                throw new InvalidOperationException("The DirectN UI thread has ended.");
+                throw new InvalidOperationException(
+                    "Send is only available while the DirectN UI thread runs. Before it has started use Post or JoinableTaskFactory.SwitchToMainThreadAsync.");
             }
 
-            done.Wait();
-            error?.Throw();
+            queue.SynchronizationContext.Send(d, state);
         }
     }
 }

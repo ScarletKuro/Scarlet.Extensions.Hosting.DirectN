@@ -116,28 +116,137 @@ public class DirectNMessageQueueTests
         Assert.False(loop.Thread.IsAlive);
 
         Assert.False(loop.Queue.TryPost(_ => { }, null));
-        Assert.Throws<System.ComponentModel.Win32Exception>(() => loop.Queue.Post(_ => { }, null));
+        Assert.Throws<InvalidOperationException>(() => loop.Queue.Post(_ => { }, null));
+        Assert.True(loop.Queue.IsClosed);
     }
 
     [Fact]
     public async Task PostsAreRejectedWhenTheThreadExitedWithAWakeUpStillPending()
     {
+        // The exit races with the window teardown; repeat to make the outcome deterministic, not lucky.
+        for (var i = 0; i < 200; i++)
+        {
+            var loop = new MessageLoopThread();
+            await loop.InvokeAsync(() =>
+            {
+                // Leaves a wake-up message in the thread's queue that nothing will ever process.
+                loop.Queue.Post(_ => { }, null);
+                loop.StopWithoutDraining();
+                return true;
+            });
+            Assert.True(loop.Thread.Join(TimeSpan.FromSeconds(10)));
+
+            Assert.False(loop.Queue.TryPost(_ => { }, null), $"Iteration {i}: TryPost accepted work for an exited thread.");
+            var send = Task.Run(() => loop.Queue.SynchronizationContext.Send(_ => { }, null), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => send.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+    }
+
+    [Fact]
+    public async Task SendIsReleasedWhenTheOwnerExitsWithoutClosing()
+    {
         var loop = new MessageLoopThread();
         await loop.InvokeAsync(() =>
         {
-            // Leaves a wake-up message in the thread's queue that nothing will ever process.
-            loop.Queue.Post(_ => { }, null);
-            loop.StopWithoutDraining();
+            loop.StopWithoutDraining(linger: TimeSpan.FromMilliseconds(500));
             return true;
         });
-        loop.Thread.Join(TimeSpan.FromSeconds(10));
-        Assert.False(loop.Thread.IsAlive);
+        await loop.LoopEnded.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        Assert.False(loop.Queue.TryPost(_ => { }, null));
+        // Accepted (the thread is still alive), never run (it no longer pumps), then the thread exits.
         var send = Task.Run(() => loop.Queue.SynchronizationContext.Send(_ => { }, null), TestContext.Current.CancellationToken);
-        var finished = await Task.WhenAny(send, Task.Delay(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        Assert.Same(send, finished);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => send);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => send.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.False(loop.Thread.IsAlive);
+    }
+
+    [Fact]
+    public async Task PostsAndSendsRacingWithCloseNeverHangOrCrash()
+    {
+        for (var iteration = 0; iteration < 30; iteration++)
+        {
+            using var loop = new MessageLoopThread();
+            var unexpected = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+            loop.Queue.UnhandledException += (_, e) => unexpected.Add(e.Exception);
+            var ran = 0;
+            var rejected = 0;
+
+            var workers = Enumerable.Range(0, 4).Select(worker => Task.Run(() =>
+            {
+                for (var n = 0; ; n++)
+                {
+                    try
+                    {
+                        if ((n + worker) % 3 == 0)
+                        {
+                            loop.Queue.SynchronizationContext.Send(_ => Interlocked.Increment(ref ran), null);
+                        }
+                        else if (!loop.Queue.TryPost(_ => Interlocked.Increment(ref ran), null))
+                        {
+                            Interlocked.Increment(ref rejected);
+                            return;
+                        }
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        Interlocked.Increment(ref rejected);
+                        return;
+                    }
+#pragma warning disable CA1031 // Collected and asserted below.
+                    catch (Exception ex)
+#pragma warning restore CA1031
+                    {
+                        unexpected.Add(ex);
+                        return;
+                    }
+                }
+            }, TestContext.Current.CancellationToken)).ToArray();
+
+            await Task.Delay(Random.Shared.Next(1, 20), TestContext.Current.CancellationToken);
+            await loop.InvokeAsync(() =>
+            {
+                loop.Queue.Close();
+                return true;
+            });
+
+            await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Empty(unexpected);
+            Assert.Equal(4, rejected);
+        }
+    }
+
+    [Fact]
+    public async Task WorkIsDeliveredWhenTheThreadMessageQueueIsTemporarilyFull()
+    {
+        using var loop = new MessageLoopThread();
+        var gate = new ManualResetEventSlim();
+        var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        loop.Queue.Post(_ =>
+        {
+            blocked.SetResult();
+            gate.Wait(TimeSpan.FromSeconds(30));
+        }, null);
+        await blocked.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Fill the thread's message queue (10,000 messages by default) while it is blocked.
+        const uint WM_APP = 0x8000;
+        var filled = false;
+        for (var i = 0; i < 20_000; i++)
+        {
+            if (!global::DirectN.Functions.PostThreadMessageW(loop.NativeThreadId, WM_APP, default, default))
+            {
+                filled = true;
+                break;
+            }
+        }
+
+        Assert.True(filled, "Could not fill the thread's message queue.");
+
+        var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(loop.Queue.TryPost(_ => ran.SetResult(), null));
+        gate.Set();
+
+        await ran.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
     }
 
     [Fact]

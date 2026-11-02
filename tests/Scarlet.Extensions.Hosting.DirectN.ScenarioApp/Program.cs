@@ -240,3 +240,17 @@ internal sealed class FailingStartedService : IHostedLifecycleService
 
     public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
+
+/// <summary>
+/// Sends to the UI thread from StartAsync, before it exists: must throw instead of deadlocking the host.
+/// </summary>
+internal sealed class SendBeforeStartService(IDirectNThread thread) : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        Scenarios.SendAndReport(thread.SynchronizationContext, "SendBeforeStart");
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}

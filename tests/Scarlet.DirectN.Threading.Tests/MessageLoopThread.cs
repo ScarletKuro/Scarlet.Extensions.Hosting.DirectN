@@ -57,10 +57,27 @@ internal sealed class MessageLoopThread : IDisposable
     /// Ends the loop right after the current message, leaving anything still queued (e.g. a wake-up) unprocessed,
     /// and lets the thread exit without closing the queue.
     /// </summary>
-    public void StopWithoutDraining() => _stop = true;
+    /// <param name="linger">How long the thread stays alive, without pumping, after the loop has ended.</param>
+    public void StopWithoutDraining(TimeSpan linger = default)
+    {
+        _linger = linger;
+        _stop = true;
+    }
 
+    /// <summary>
+    /// Gets the Win32 thread id.
+    /// </summary>
+    public uint NativeThreadId => _nativeThreadId;
+
+    /// <summary>
+    /// Completes when the loop has ended (the thread may still linger).
+    /// </summary>
+    public Task LoopEnded => _loopEnded.Task;
+
+    private readonly TaskCompletionSource _loopEnded = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _stop;
     private volatile uint _nativeThreadId;
+    private TimeSpan _linger;
 
     private void Run()
     {
@@ -71,5 +88,8 @@ internal sealed class MessageLoopThread : IDisposable
             Functions.TranslateMessage(msg);
             Functions.DispatchMessageW(msg);
         }
+
+        _loopEnded.SetResult();
+        Thread.Sleep(_linger);
     }
 }

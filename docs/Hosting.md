@@ -39,11 +39,16 @@ startup if the application hadn't started yet).
 
 ## Posting to the UI thread
 
-`IDirectNThread.SynchronizationContext` is usable at any time:
+`Post` on `IDirectNThread.SynchronizationContext` is usable at any time and never throws (`JoinableTaskFactory` would
+terminate the process on a throw):
 - before the UI thread exists, work is kept and runs once the application has started;
 - while it runs, work is queued to the UI thread, also while a modal loop (menu, message box, dialog, window move) is open;
-- after it ended, work is dropped and logged, never thrown (`JoinableTaskFactory` would terminate the process on a throw).
-  `Send` then throws `InvalidOperationException`.
+- after it ended, work is dropped and logged.
+
+`Send` always returns: the work ran (its exception, if any, is rethrown to the caller), or it throws
+`InvalidOperationException`. That happens before the UI thread exists (blocking there would deadlock a hosted service's
+`StartAsync`, since the UI thread starts after it), when the UI thread ends before running the work, and after it ended.
+Like any `Send`, calling it from a thread the UI thread is waiting on deadlocks.
 
 ## API
 
