@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <PublishAot>true</PublishAot>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Test code: rules that only matter for shipped libraries. -->
     <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1849</NoWarn>
@@ -14,6 +13,10 @@
 
   <ItemGroup>
     <PackageReference Include="xunit.v3.aot" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == ''">
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" />
   </ItemGroup>
 
   <ItemGroup>

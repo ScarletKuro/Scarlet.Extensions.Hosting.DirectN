@@ -194,6 +194,7 @@ public class AsyncLazyTests : TestBase
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    [Trait("TestCategory", "FailsInCloudTest")] // GC reachability: code coverage instrumentation keeps the factory alive.
     public async Task AsyncPumpReleasedAfterExecution(bool throwInValueFactory)
     {
         WeakReference collectible = await this.AsyncPumpReleasedAfterExecution_Helper(throwInValueFactory);

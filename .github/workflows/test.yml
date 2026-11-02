@@ -26,18 +26,29 @@ jobs:
       - name: Build
         run: dotnet build Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-restore
 
-      # Microsoft.Testing.Platform (opted in by global.json).
+      # Microsoft Code Coverage also collects from child processes, so the ScenarioApp runs count. GC reachability tests
+      # (FailsInCloudTest, as upstream vs-threading) are skipped here because instrumentation keeps objects alive; they run on Native AOT below.
       - name: Test
-        run: dotnet test --solution Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
+        run: >
+          dotnet test --solution Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
+          --coverage --coverage-output-format cobertura --results-directory ./coverage
+          --filter-not-trait "TestCategory=FailsInCloudTest"
 
-      # The library tests use xunit.v3.aot: published as native executables, they run the same tests (including the 245 ported
-      # vs-threading tests) under Native AOT.
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/**/*.cobertura.xml
+          fail_ci_if_error: false
+
+      # xunit.v3.aot test projects, published as native executables.
       - name: Test libraries on Native AOT
         shell: pwsh
         run: |
           $failed = @()
           foreach ($project in 'Scarlet.DirectN.Threading.Tests', 'Scarlet.Extensions.Hosting.DirectN.Threading.Tests', 'Scarlet.Extensions.Hosting.DirectN.TrayIcon.Tests') {
-            dotnet publish "tests/$project" -c Release -r win-x64 -o "artifacts/aot/$project" -p:TreatWarningsAsErrors=true
+            dotnet publish "tests/$project" -c Release -r win-x64 -o "artifacts/aot/$project" -p:PublishAot=true -p:TreatWarningsAsErrors=true
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & "artifacts/aot/$project/$project.exe"
             if ($LASTEXITCODE -ne 0) { $failed += $project }

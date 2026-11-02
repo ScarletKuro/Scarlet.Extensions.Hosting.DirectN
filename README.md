@@ -1,4 +1,8 @@
 # Scarlet.Extensions.Hosting.DirectN
+[![Nuget](https://img.shields.io/nuget/v/Scarlet.Extensions.Hosting.DirectN?color=ff4081&logo=nuget)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN/)
+[![Nuget](https://img.shields.io/nuget/dt/Scarlet.Extensions.Hosting.DirectN?color=ff4081&label=nuget%20downloads&logo=nuget)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN/)
+[![GitHub](https://img.shields.io/github/license/ScarletKuro/Scarlet.Extensions.Hosting.DirectN?color=594ae2&logo=github)](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/LICENSE)
+[![codecov](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/graph/badge.svg?token=BOR54748WR)](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN)
 
 [Microsoft.Extensions.Hosting](https://learn.microsoft.com/dotnet/core/extensions/generic-host) (Generic Host) for
 [DirectN](https://github.com/smourier/DirectNAot) Win32 / Direct2D desktop apps. It runs the DirectN UI thread inside the
