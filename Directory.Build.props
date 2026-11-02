@@ -13,7 +13,6 @@
 
   <PropertyGroup>
     <Authors>ScarletKuro</Authors>
-    <Company>ScarletKuro</Company>
     <RepositoryUrl>https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>$(RepositoryUrl)</PackageProjectUrl>
