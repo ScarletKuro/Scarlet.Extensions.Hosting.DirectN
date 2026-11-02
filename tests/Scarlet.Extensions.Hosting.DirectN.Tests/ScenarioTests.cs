@@ -67,6 +67,21 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void PostsRunInTheirCallersExecutionContextAlsoWhenPostedBeforeStart()
+    {
+        var result = ScenarioRunner.Run("execution-context");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "OnStartup|ui:app",
+            "PrestartPost|prestart-caller",
+            "RunningPost|running-caller",
+            "LaterPost|",
+            "OnExit|ui",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
     public void SendAlwaysReturnsBeforeDuringAndAfterTheUiThreadRuns()
     {
         var result = ScenarioRunner.Run("send");

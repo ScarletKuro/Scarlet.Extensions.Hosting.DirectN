@@ -216,6 +216,38 @@ public class DirectNMessageQueueTests
     }
 
     [Fact]
+    public async Task WakeUpIsRetriedWhenTheThreadMessageQueueIsFullAndNothingIsDraining()
+    {
+        using var loop = new MessageLoopThread();
+        var gate = new ManualResetEventSlim();
+
+        // Paused between messages, so no queue processing is in progress that could pick the work up by itself.
+        var paused = await loop.InvokeAsync(() => loop.PauseAfterCurrentMessage(gate));
+        await paused.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.True(FillThreadMessageQueue(loop.NativeThreadId), "Could not fill the thread's message queue.");
+
+        var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Assert.True(loop.Queue.TryPost(_ => ran.SetResult(), null));
+        gate.Set();
+
+        await ran.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+    }
+
+    private static bool FillThreadMessageQueue(uint nativeThreadId)
+    {
+        const uint WM_APP = 0x8000;
+        for (var i = 0; i < 20_000; i++)
+        {
+            if (!global::DirectN.Functions.PostThreadMessageW(nativeThreadId, WM_APP, default, default))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    [Fact]
     public async Task WorkIsDeliveredWhenTheThreadMessageQueueIsTemporarilyFull()
     {
         using var loop = new MessageLoopThread();

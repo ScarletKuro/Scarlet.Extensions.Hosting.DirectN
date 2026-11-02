@@ -45,6 +45,9 @@ terminate the process on a throw):
 - while it runs, work is queued to the UI thread, also while a modal loop (menu, message box, dialog, window move) is open;
 - after it ended, work is dropped and logged.
 
+Work runs in the `ExecutionContext` of whoever posted it (`AsyncLocal` values such as request ids and logging scopes,
+culture), also when it was posted before the UI thread existed.
+
 `Send` always returns: the work ran (its exception, if any, is rethrown to the caller), or it throws
 `InvalidOperationException`. That happens before the UI thread exists (blocking there would deadlock a hosted service's
 `StartAsync`, since the UI thread starts after it), when the UI thread ends before running the work, and after it ended.

@@ -40,7 +40,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     // Older work waits while newer posts run on purpose: the list comes from outside (e.g. a request accepted while the host was
     // starting) and should find the application started, while a post made during startup may be what a modal loop in a
     // component's InitializeComponent is waiting for, so holding it could deadlock startup.
-    private List<(SendOrPostCallback Callback, object? State)>? _pendingPosts = [];
+    private List<PendingPost>? _pendingPosts = [];
     private DirectNMessageQueue? _queue;
     private volatile bool _disposed;
     private volatile bool _stopRequested;
@@ -139,7 +139,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
                 }
 
                 firstQueued = pendingPosts.Count == 0;
-                pendingPosts.Add((callback, state));
+                pendingPosts.Add(new PendingPost(callback, state, ExecutionContext.Capture()));
             }
             else
             {
@@ -495,7 +495,7 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
     /// </summary>
     private void FlushPendingPosts()
     {
-        List<(SendOrPostCallback Callback, object? State)>? pendingPosts;
+        List<PendingPost>? pendingPosts;
         DirectNMessageQueue? queue;
         lock (_stateLock)
         {
@@ -509,13 +509,28 @@ internal sealed class DirectNThread : IDirectNThread, IDisposable
             return;
         }
 
-        foreach (var (callback, state) in pendingPosts)
+        foreach (var post in pendingPosts)
         {
-            if (!queue.TryPost(callback, state))
+            // In the poster's ExecutionContext, captured when it posted, not the UI thread's at flush time.
+            var posted = post.Context is null
+                ? queue.TryPost(post.Callback, post.State)
+                : queue.TryPost(static s => ((PendingPost)s!).RunInCapturedContext(), post);
+            if (!posted)
             {
                 LogPostDropped();
             }
         }
+    }
+
+    private sealed class PendingPost(SendOrPostCallback callback, object? state, ExecutionContext? context)
+    {
+        public SendOrPostCallback Callback => callback;
+
+        public object? State => state;
+
+        public ExecutionContext? Context => context;
+
+        public void RunInCapturedContext() => ExecutionContext.Run(context!, static s => ((PendingPost)s!).Callback(((PendingPost)s!).State), this);
     }
 
     private void InitializeComponents(DisposableList<IDirectNComponent> components)

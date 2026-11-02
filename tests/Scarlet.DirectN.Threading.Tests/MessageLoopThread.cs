@@ -74,6 +74,19 @@ internal sealed class MessageLoopThread : IDisposable
     /// </summary>
     public Task LoopEnded => _loopEnded.Task;
 
+    /// <summary>
+    /// Pauses the loop between messages (outside the queue's processing) once the current message is done, until
+    /// <paramref name="gate"/> is set. Completes when paused.
+    /// </summary>
+    public Task PauseAfterCurrentMessage(ManualResetEventSlim gate)
+    {
+        _paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Volatile.Write(ref _pauseGate, gate);
+        return _paused.Task;
+    }
+
+    private ManualResetEventSlim? _pauseGate;
+    private TaskCompletionSource? _paused;
     private readonly TaskCompletionSource _loopEnded = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _stop;
     private volatile uint _nativeThreadId;
@@ -87,6 +100,12 @@ internal sealed class MessageLoopThread : IDisposable
         {
             Functions.TranslateMessage(msg);
             Functions.DispatchMessageW(msg);
+
+            if (Interlocked.Exchange(ref _pauseGate, null) is { } gate)
+            {
+                _paused!.SetResult();
+                gate.Wait();
+            }
         }
 
         _loopEnded.SetResult();

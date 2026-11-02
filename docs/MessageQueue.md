@@ -19,6 +19,9 @@ queue.Post(_ => window.Text = "Updated", null);
   dispatched by every message loop, **including modal ones** (menus, message boxes, task dialogs, window move/resize), so queued
   work never stalls while one of those is open. Thread messages (`PostThreadMessage`) would be lost there.
 - At most 256 items run per wake-up so a flood of posts can't starve input and paint messages.
+- Like WPF's Dispatcher and WinForms' `BeginInvoke`, each item runs in the `ExecutionContext` captured from its caller
+  (`AsyncLocal` values, culture), and what it changes there doesn't leak into later items. Work posted with flow suppressed
+  runs in the UI thread's own baseline context.
 - `DirectNSynchronizationContext.Send` runs inline on the UI thread and otherwise blocks until the UI thread ran the work.
 - Exceptions from queued work raise `UnhandledException`; unless `Handled` is set they are rethrown on the thread pool and
   terminate the process, like WinForms and WPF.

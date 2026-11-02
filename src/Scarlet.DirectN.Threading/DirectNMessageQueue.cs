@@ -52,7 +52,12 @@ public sealed unsafe partial class DirectNMessageQueue
     [ThreadStatic]
     private static DirectNMessageQueue? t_current;
 
-    private readonly ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _queue = new();
+    private readonly ConcurrentQueue<WorkItem> _queue = new();
+
+    // The UI thread's own context, captured when the queue is created on it (or, if flow was suppressed then, when first
+    // needed). Work posted with ExecutionContext flow
+    // suppressed runs in it, so that work is isolated from other callbacks too.
+    private ExecutionContext? _baselineContext;
     private readonly HWND _hwnd;
     private readonly OwnerThreadExitHandle? _ownerExit;
     private readonly Timer _wakeRetry;
@@ -70,6 +75,7 @@ public sealed unsafe partial class DirectNMessageQueue
         ManagedThreadId = Environment.CurrentManagedThreadId;
         Thread = Thread.CurrentThread;
         SynchronizationContext = new DirectNSynchronizationContext(this);
+        _baselineContext = ExecutionContext.Capture();
         _wakeRetry = new Timer(static state => ((DirectNMessageQueue)state!).RetryWake(), this, Timeout.Infinite, Timeout.Infinite);
 
         // Signaled when the OS thread terminates, so a waiting Send is released even if the thread exits without Close.
@@ -184,7 +190,7 @@ public sealed unsafe partial class DirectNMessageQueue
             return false;
         }
 
-        _queue.Enqueue((callback, state));
+        _queue.Enqueue(new WorkItem(callback, state, ExecutionContext.Capture()));
 
         // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop it here.
         if (Volatile.Read(ref _closed) != 0)
@@ -341,7 +347,7 @@ public sealed unsafe partial class DirectNMessageQueue
         while (processed < MaxItemsPerWakeUp && Volatile.Read(ref _closed) == 0 && _queue.TryDequeue(out var item))
         {
             processed++;
-            Execute(item.Callback, item.State);
+            Execute(item);
         }
 
         if (Volatile.Read(ref _closed) == 0 && !_queue.IsEmpty)
@@ -352,13 +358,25 @@ public sealed unsafe partial class DirectNMessageQueue
         }
     }
 
-    private void Execute(SendOrPostCallback callback, object? state)
+    private void Execute(WorkItem item)
     {
         var previous = System.Threading.SynchronizationContext.Current;
         try
         {
             System.Threading.SynchronizationContext.SetSynchronizationContext(SynchronizationContext);
-            callback(state);
+
+            // Like WPF's DispatcherOperation and WinForms' Control.BeginInvoke: the callback runs in the ExecutionContext
+            // captured from its caller (AsyncLocal values, culture), and whatever it changes there doesn't leak into the next one.
+            var context = item.Context ?? (_baselineContext ??= ExecutionContext.Capture());
+            if (context is null)
+            {
+                // Flow is suppressed on the UI thread itself: nothing to run in.
+                item.Invoke();
+            }
+            else
+            {
+                ExecutionContext.Run(context, static s => ((WorkItem)s!).Invoke(), item);
+            }
         }
         catch (Exception ex)
         {
@@ -477,6 +495,18 @@ public sealed unsafe partial class DirectNMessageQueue
         }
 
         return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
+    }
+
+    private sealed class WorkItem(SendOrPostCallback callback, object? state, ExecutionContext? context)
+    {
+        public object? State => state;
+
+        /// <summary>
+        /// Gets the caller's context, or <see langword="null"/> when the caller suppressed ExecutionContext flow.
+        /// </summary>
+        public ExecutionContext? Context => context;
+
+        public void Invoke() => callback(state);
     }
 
     private sealed class OwnerThreadExitHandle : WaitHandle

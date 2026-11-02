@@ -143,6 +143,27 @@ internal static unsafe partial class Scenarios
                 });
                 return true;
 
+            case "execution-context":
+                AddDirectN(services, ShutdownMode.OnExplicitShutdown);
+                services.AddHostedService(sp => new ContextPostService(sp.GetRequiredService<IDirectNThread>()));
+                OnStarted(services, sp =>
+                {
+                    var context = sp.GetRequiredService<IDirectNThread>().SynchronizationContext;
+                    ContextPostService.Request.Value = "running-caller";
+                    context.Post(_ =>
+                    {
+                        Program.Report("RunningPost", ContextPostService.Request.Value);
+                        ContextPostService.Request.Value = "left-by-running";
+                    }, null);
+                    ContextPostService.Request.Value = null;
+                    context.Post(_ =>
+                    {
+                        Program.Report("LaterPost", ContextPostService.Request.Value);
+                        sp.GetRequiredService<IHostApplicationLifetime>().StopApplication();
+                    }, null);
+                });
+                return true;
+
             case "started-failure":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 services.AddSingleton<GuardedDependency>();

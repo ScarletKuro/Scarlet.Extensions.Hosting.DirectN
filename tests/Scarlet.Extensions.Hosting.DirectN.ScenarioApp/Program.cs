@@ -254,3 +254,21 @@ internal sealed class SendBeforeStartService(IDirectNThread thread) : IHostedSer
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
+
+/// <summary>
+/// Posts from StartAsync, before the UI thread exists, with an AsyncLocal set: the work must still see it.
+/// </summary>
+internal sealed class ContextPostService(IDirectNThread thread) : IHostedService
+{
+    public static AsyncLocal<string?> Request { get; } = new();
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        Request.Value = "prestart-caller";
+        thread.SynchronizationContext.Post(_ => Program.Report("PrestartPost", Request.Value), null);
+        Request.Value = null;
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
