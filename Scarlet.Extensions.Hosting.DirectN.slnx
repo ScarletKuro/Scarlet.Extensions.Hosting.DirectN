@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/HostingMinimal/HostingMinimal.csproj" />
+    <Project Path="samples/HostingTrayIcon/HostingTrayIcon.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Scarlet.DirectN.Threading/Scarlet.DirectN.Threading.csproj" />
+    <Project Path="src/Scarlet.Extensions.Hosting.DirectN.Threading/Scarlet.Extensions.Hosting.DirectN.Threading.csproj" />
+    <Project Path="src/Scarlet.Extensions.Hosting.DirectN.TrayIcon/Scarlet.Extensions.Hosting.DirectN.TrayIcon.csproj" />
+    <Project Path="src/Scarlet.Extensions.Hosting.DirectN/Scarlet.Extensions.Hosting.DirectN.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Scarlet.DirectN.Threading.Tests/Scarlet.DirectN.Threading.Tests.csproj" />
+    <Project Path="tests/Scarlet.Extensions.Hosting.DirectN.ScenarioApp/Scarlet.Extensions.Hosting.DirectN.ScenarioApp.csproj" />
+    <Project Path="tests/Scarlet.Extensions.Hosting.DirectN.Tests/Scarlet.Extensions.Hosting.DirectN.Tests.csproj" />
+    <Project Path="tests/Scarlet.Extensions.Hosting.DirectN.Threading.Tests/Scarlet.Extensions.Hosting.DirectN.Threading.Tests.csproj" />
+    <Project Path="tests/Scarlet.Extensions.Hosting.DirectN.TrayIcon.Tests/Scarlet.Extensions.Hosting.DirectN.TrayIcon.Tests.csproj" />
+  </Folder>
+</Solution>

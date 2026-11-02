@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Scarlet.Extensions.Hosting.DirectN/Scarlet.Extensions.Hosting.DirectN.csproj" />
+    <ProjectReference Include="../../src/Scarlet.Extensions.Hosting.DirectN.Threading/Scarlet.Extensions.Hosting.DirectN.Threading.csproj" />
+    <ProjectReference Include="../../src/Scarlet.Extensions.Hosting.DirectN.TrayIcon/Scarlet.Extensions.Hosting.DirectN.TrayIcon.csproj" />
+  </ItemGroup>
+
+</Project>
