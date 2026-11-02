@@ -118,16 +118,22 @@ public class TrayNotifyIconTests
     }
 
     [Fact]
-    public async Task OnlyTheCreatingThreadMayUseIt()
+    public void OnlyTheCreatingThreadMayUseIt()
     {
         using var icon = new TrayNotifyIcon();
+        var failures = new List<Exception?>();
 
-        await Task.Run(() =>
+        // A dedicated thread: with Task.Run the pool could pick this very thread (xunit.v3.aot runs tests on pool threads).
+        var other = new Thread(() =>
         {
-            Assert.Throws<InvalidOperationException>(() => icon.Text = "other thread");
-            Assert.Throws<InvalidOperationException>(() => icon.Visible = true);
-            Assert.Throws<InvalidOperationException>(icon.ShowContextMenu);
-        }, TestContext.Current.CancellationToken);
+            failures.Add(Xunit.Record.Exception(() => icon.Text = "other thread"));
+            failures.Add(Xunit.Record.Exception(() => icon.Visible = true));
+            failures.Add(Xunit.Record.Exception(icon.ShowContextMenu));
+        });
+        other.Start();
+        other.Join();
+
+        Assert.All(failures, failure => Assert.IsType<InvalidOperationException>(failure));
     }
 
     [Fact]

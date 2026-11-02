@@ -26,8 +26,23 @@ jobs:
       - name: Build
         run: dotnet build Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-restore
 
+      # Microsoft.Testing.Platform (opted in by global.json).
       - name: Test
-        run: dotnet test Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
+        run: dotnet test --solution Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
+
+      # The library tests use xunit.v3.aot: published as native executables, they run the same tests (including the 245 ported
+      # vs-threading tests) under Native AOT.
+      - name: Test libraries on Native AOT
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($project in 'Scarlet.DirectN.Threading.Tests', 'Scarlet.Extensions.Hosting.DirectN.Threading.Tests', 'Scarlet.Extensions.Hosting.DirectN.TrayIcon.Tests') {
+            dotnet publish "tests/$project" -c Release -r win-x64 -o "artifacts/aot/$project" -p:TreatWarningsAsErrors=true
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "artifacts/aot/$project/$project.exe"
+            if ($LASTEXITCODE -ne 0) { $failed += $project }
+          }
+          if ($failed) { Write-Error "Native AOT tests failed: $($failed -join ', ')"; exit 1 }
 
       # The ScenarioApp drives a real host, DirectN application, tray icon and JoinableTaskFactory; publishing it with
       # PublishAot proves the whole stack compiles to native code without IL/AOT warnings, then the same scenarios run on it.
@@ -38,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           $env:SCARLET_SCENARIO_APP = "$PWD/artifacts/aot/scenario/Scarlet.Extensions.Hosting.DirectN.ScenarioApp.exe"
-          dotnet test tests/Scarlet.Extensions.Hosting.DirectN.Tests -c Release --no-build --filter "FullyQualifiedName~ScenarioTests"
+          dotnet test --project tests/Scarlet.Extensions.Hosting.DirectN.Tests -c Release --no-build --filter-class "*.ScenarioTests"
 
       - name: Publish samples (Native AOT)
         run: |

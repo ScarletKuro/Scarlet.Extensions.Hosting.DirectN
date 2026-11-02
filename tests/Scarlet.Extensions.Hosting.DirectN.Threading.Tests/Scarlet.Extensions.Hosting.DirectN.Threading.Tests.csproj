@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Also published and run as a Native AOT executable in CI (xunit.v3.aot). -->
+    <PublishAot>true</PublishAot>
     <!-- Test code: rules that only matter for shipped libraries. -->
     <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1849</NoWarn>
   </PropertyGroup>
@@ -11,7 +13,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.v3.aot" />
   </ItemGroup>
 
   <ItemGroup>
