@@ -42,9 +42,10 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     /// Runs <paramref name="d"/> on the UI thread and waits for it. Runs inline when called on the UI thread.
     /// </summary>
     /// <remarks>
-    /// Blocks the calling thread until the UI thread processes the work. It always returns: if the queue is closed or its
-    /// thread exits before running the work, it throws instead of waiting forever. Calling it from a thread the UI thread is
-    /// itself waiting on deadlocks, as with any Send.
+    /// Blocks the calling thread until the UI thread processes the work. If the queue is closed or its thread exits before
+    /// running the work, it throws instead of waiting forever. Like any Send it waits as long as the UI thread is alive but
+    /// doesn't process messages (blocked, or busy with a long callback), and calling it from a thread the UI thread is itself
+    /// waiting on deadlocks.
     /// </remarks>
     /// <param name="d">The work to run.</param>
     /// <param name="state">The state passed to <paramref name="d"/>.</param>
@@ -60,7 +61,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
         }
 
         var work = new SendWork(d, state);
-        if (!Queue.TryPost(static s => ((SendWork)s!).Run(), work))
+        if (!Queue.TryPostAbandonable(static s => ((SendWork)s!).Run(), work, static s => ((SendWork)s!).Abandon()))
         {
             throw DirectNMessageQueue.QueueClosedException();
         }
@@ -70,18 +71,20 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     }
 
     /// <summary>
-    /// The queued item of a cross-thread Send: completed exactly once, by running it or by the queue dropping it.
+    /// The queued item of a cross-thread Send. Claimed exactly once, by running it or by the queue dropping it; <see cref="Done"/>
+    /// is set once that has finished (the callback returned, or the drop was recorded).
     /// </summary>
     internal sealed class SendWork(SendOrPostCallback callback, object? state)
     {
         private ExceptionDispatchInfo? _error;
-        private int _completed;
+        // 1 once Run or Abandon has taken the item: set before the callback runs, unlike Done.
+        private int _claimed;
 
         public ManualResetEventSlim Done { get; } = new();
 
         public void Run()
         {
-            if (Interlocked.Exchange(ref _completed, 1) != 0)
+            if (Interlocked.Exchange(ref _claimed, 1) != 0)
             {
                 return;
             }
@@ -102,7 +105,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
 
         public void Abandon()
         {
-            if (Interlocked.Exchange(ref _completed, 1) != 0)
+            if (Interlocked.Exchange(ref _claimed, 1) != 0)
             {
                 return;
             }

@@ -25,7 +25,7 @@ namespace Scarlet.DirectN.Threading;
 /// <para>
 /// Guarantees: <see cref="TryPost"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
 /// its thread has exited); transient failures such as a full thread message queue are retried. A cross-thread
-/// <see cref="DirectNSynchronizationContext.Send"/> always returns: the work ran, or it throws
+/// <see cref="DirectNSynchronizationContext.Send"/> returns once the work ran (while the thread processes messages), or throws
 /// <see cref="InvalidOperationException"/> because the queue was closed or its thread exited first.
 /// </para>
 /// </remarks>
@@ -192,7 +192,13 @@ public sealed unsafe partial class DirectNMessageQueue
     /// <see langword="false"/> when the work can never run: the queue was closed or its thread has exited. Work accepted
     /// while the queue is being closed may still be dropped by the closing.
     /// </returns>
-    public bool TryPost(SendOrPostCallback callback, object? state)
+    public bool TryPost(SendOrPostCallback callback, object? state) => TryPostAbandonable(callback, state, onAbandoned: null);
+
+    /// <summary>
+    /// Queues <paramref name="callback"/>, with what to do if it is dropped without running (closing the queue, or the owner
+    /// thread exiting): a cross-thread Send uses it to release its caller.
+    /// </summary>
+    internal bool TryPostAbandonable(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
@@ -201,7 +207,7 @@ public sealed unsafe partial class DirectNMessageQueue
             return false;
         }
 
-        _queue.Enqueue(new WorkItem(callback, state, ExecutionContext.Capture()));
+        _queue.Enqueue(new WorkItem(callback, state, ExecutionContext.Capture(), onAbandoned));
 
         // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop it here.
         if (Volatile.Read(ref _closed) != 0)
@@ -373,18 +379,15 @@ public sealed unsafe partial class DirectNMessageQueue
     }
 
     /// <summary>
-    /// Removes everything queued without running it. A pending cross-thread Send is completed with an exception, so its
-    /// caller never waits forever; posted work is simply dropped.
+    /// Removes everything queued without running it, telling each item it was abandoned (a pending cross-thread Send then
+    /// throws, so its caller never waits forever); posted work is simply dropped.
     /// </summary>
     private void AbandonQueuedWork()
     {
         while (_queue.TryDequeue(out var item))
         {
             Interlocked.Increment(ref _dropped);
-            if (item.State is DirectNSynchronizationContext.SendWork send)
-            {
-                send.Abandon();
-            }
+            item.Abandon();
         }
     }
 
@@ -585,16 +588,19 @@ public sealed unsafe partial class DirectNMessageQueue
         return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
     }
 
-    private sealed class WorkItem(SendOrPostCallback callback, object? state, ExecutionContext? context)
+    private sealed class WorkItem(SendOrPostCallback callback, object? state, ExecutionContext? context, Action<object?>? onAbandoned)
     {
-        public object? State => state;
-
         /// <summary>
         /// Gets the caller's context, or <see langword="null"/> when the caller suppressed ExecutionContext flow.
         /// </summary>
         public ExecutionContext? Context => context;
 
         public void Invoke() => callback(state);
+
+        /// <summary>
+        /// Dropped without running.
+        /// </summary>
+        public void Abandon() => onAbandoned?.Invoke(state);
     }
 
     private sealed class OwnerThreadExitHandle : WaitHandle

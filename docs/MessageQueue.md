@@ -30,8 +30,10 @@ queue.Post(_ => window.Text = "Updated", null);
 - `DirectNSynchronizationContext.Post` never throws: once the queue is closed the work is dropped, like WPF's and WinForms'
   contexts after shutdown. It is the context `await` resumes on, and the runtime turns an exception thrown there into one that
   terminates the process. `DroppedCount` counts the work dropped by closing.
-- A cross-thread `Send` always returns: the work ran, or it throws `InvalidOperationException` because the queue closed or its
-  thread exited first, also when the thread exits without `Close`.
+- A cross-thread `Send` returns once the work ran, or throws `InvalidOperationException` because the queue closed or its
+  thread exited first, also when the thread exits without `Close`. Like any `Send`, it waits as long as the UI thread is alive
+  but doesn't process messages (blocked, or busy in a long callback).
+- The queue has no capacity limit: don't flood the UI thread with unbounded work.
 - Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread
   exits without it is still released by the garbage collector.
 

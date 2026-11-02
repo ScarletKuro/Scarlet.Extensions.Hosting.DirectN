@@ -887,7 +887,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
         }
 
         /// <summary>
-        /// Runs inline on the UI thread; otherwise hands the work to the queue's Send, which always returns (the work ran, or
+        /// Runs inline on the UI thread; otherwise hands the work to the queue's Send, which returns once the work ran (or
         /// it throws because the queue closed first). Before the UI thread has created its queue it throws instead of
         /// blocking: a Send from a hosted service's StartAsync would otherwise deadlock, the UI thread starting after it.
         /// </summary>
