@@ -7,11 +7,14 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- Enables the trim, AOT and single-file analyzers. Every library must stay warning free. -->
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- Each project packs its own doc as README.md (PackageReadme item). -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)..\icon.png" Pack="true" PackagePath="" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)..\LICENSE" Pack="true" PackagePath="" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)..\LICENSE-3RD-PARTY.txt" Pack="true" PackagePath="" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>

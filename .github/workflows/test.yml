@@ -1,0 +1,46 @@
+name: test
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: Test (JIT and Native AOT)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore Scarlet.Extensions.Hosting.DirectN.slnx
+
+      # TreatWarningsAsErrors + IsAotCompatible: any trim/AOT analyzer warning fails the build.
+      - name: Build
+        run: dotnet build Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build
+
+      # The ScenarioApp drives a real host, DirectN application, tray icon and JoinableTaskFactory; publishing it with
+      # PublishAot proves the whole stack compiles to native code without IL/AOT warnings, then the same scenarios run on it.
+      - name: Publish ScenarioApp (Native AOT)
+        run: dotnet publish tests/Scarlet.Extensions.Hosting.DirectN.ScenarioApp -c Release -r win-x64 -o artifacts/aot/scenario -p:TreatWarningsAsErrors=true
+
+      - name: Test scenarios on Native AOT
+        shell: pwsh
+        run: |
+          $env:SCARLET_SCENARIO_APP = "$PWD/artifacts/aot/scenario/Scarlet.Extensions.Hosting.DirectN.ScenarioApp.exe"
+          dotnet test tests/Scarlet.Extensions.Hosting.DirectN.Tests -c Release --no-build --filter "FullyQualifiedName~ScenarioTests"
+
+      - name: Publish samples (Native AOT)
+        run: |
+          dotnet publish samples/HostingMinimal -c Release -r win-x64 -o artifacts/aot/HostingMinimal -p:TreatWarningsAsErrors=true
+          dotnet publish samples/HostingTrayIcon -c Release -r win-x64 -o artifacts/aot/HostingTrayIcon -p:TreatWarningsAsErrors=true

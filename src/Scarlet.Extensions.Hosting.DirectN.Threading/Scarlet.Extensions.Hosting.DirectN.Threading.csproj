@@ -11,7 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\LICENSE-3RD-PARTY.txt" Pack="true" PackagePath="" Visible="false" />
+    <None Include="..\..\docs\Threading.md" Pack="true" PackagePath="README.md" Visible="false" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,45 @@
+name: continuous
+
+on:
+  # Branches only: release tags are built, tested and published by release.yml.
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: Build and pack
+    runs-on: windows-latest
+    env:
+      # Identifies which push a CI package came from; release versions come from the tag (release.yml).
+      CI_VERSION: 0.0.0-ci.${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore Scarlet.Extensions.Hosting.DirectN.slnx
+
+      - name: Build
+        run: dotnet build Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-restore -p:Version=${{ env.CI_VERSION }}
+
+      - name: Pack
+        run: dotnet pack Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build -o artifacts/packages -p:Version=${{ env.CI_VERSION }}
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: artifacts/packages

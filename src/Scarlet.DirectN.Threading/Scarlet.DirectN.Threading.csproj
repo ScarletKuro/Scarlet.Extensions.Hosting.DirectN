@@ -10,4 +10,8 @@
     <PackageReference Include="DirectNAot" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\docs\MessageQueue.md" Pack="true" PackagePath="README.md" Visible="false" />
+  </ItemGroup>
+
 </Project>

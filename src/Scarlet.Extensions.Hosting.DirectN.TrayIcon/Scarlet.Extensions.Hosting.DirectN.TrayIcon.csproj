@@ -10,4 +10,8 @@
     <ProjectReference Include="..\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\docs\TrayIcon.md" Pack="true" PackagePath="README.md" Visible="false" />
+  </ItemGroup>
+
 </Project>

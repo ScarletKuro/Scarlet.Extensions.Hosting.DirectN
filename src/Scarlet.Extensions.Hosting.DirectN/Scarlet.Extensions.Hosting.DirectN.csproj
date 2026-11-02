@@ -16,4 +16,8 @@
     <ProjectReference Include="..\Scarlet.DirectN.Threading\Scarlet.DirectN.Threading.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="README.md" Visible="false" />
+  </ItemGroup>
+
 </Project>

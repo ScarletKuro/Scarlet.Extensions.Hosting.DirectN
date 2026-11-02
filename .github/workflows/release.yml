@@ -1,0 +1,89 @@
+name: release
+
+on:
+  push:
+    tags:
+      # Matches SemVer release tags: 1.0.0, 1.1.0-preview.1, etc. The tag is the package version.
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+jobs:
+  version:
+    name: Version from tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      file_version: ${{ steps.get_version.outputs.file_version }}
+    steps:
+      - name: Extract version from tag
+        id: get_version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$GITHUB_REF_NAME"
+
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a valid SemVer package version. Use 1.0.0 or 1.1.0-preview.1."
+            exit 1
+          fi
+
+          # Set explicitly: the SDK would otherwise derive the file version from the assembly version.
+          file_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0"
+
+          echo "version=$version, file version=$file_version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "file_version=$file_version" >> "$GITHUB_OUTPUT"
+
+  # Nothing is published unless the tests (JIT and Native AOT) pass on the tagged commit.
+  test:
+    needs: version
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    name: Publish release packages
+    needs: [version, test]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION_PROPERTIES: >-
+        -p:Version=${{ needs.version.outputs.version }}
+        -p:FileVersion=${{ needs.version.outputs.file_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      - name: Restore
+        run: dotnet restore Scarlet.Extensions.Hosting.DirectN.slnx
+
+      - name: Build
+        run: dotnet build Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-restore ${{ env.VERSION_PROPERTIES }}
+
+      - name: Pack
+        run: dotnet pack Scarlet.Extensions.Hosting.DirectN.slnx -c Release --no-build -o artifacts/packages ${{ env.VERSION_PROPERTIES }}
+
+      - name: NuGet login
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet.org
+        shell: bash
+        run: dotnet nuget push "artifacts/packages/*.nupkg" --source "https://api.nuget.org/v3/index.json" --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: artifacts/packages
