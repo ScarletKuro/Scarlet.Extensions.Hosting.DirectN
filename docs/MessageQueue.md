@@ -22,13 +22,17 @@ queue.Post(_ => window.Text = "Updated", null);
 - `DirectNSynchronizationContext.Send` runs inline on the UI thread and otherwise blocks until the UI thread ran the work.
 - Exceptions from queued work raise `UnhandledException`; unless `Handled` is set they are rethrown on the thread pool and
   terminate the process, like WinForms and WPF.
-- `TryPost` returns `false` (and `Post` throws) once the UI thread has exited.
+- `TryPost` returns `false` (and `Post` throws) once the queue is closed or its thread has exited; queued work is then dropped
+  and a pending `Send` throws `InvalidOperationException` instead of waiting forever.
+- Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread
+  exits without it is still released by the garbage collector.
 
 | Member | |
 |---|---|
 | `DirectNMessageQueue.GetOrCreateForCurrentThread()` | The queue of the calling thread, created on first use. |
 | `DirectNMessageQueue.Current` | The queue of the calling thread, or `null`. |
 | `Post` / `TryPost` | Queue work for the UI thread. |
+| `Close()` | Owner thread only: drops queued work, rejects later posts, releases the window and native handle. |
 | `CheckAccess()`, `Thread`, `ManagedThreadId` | The owning thread. |
 | `SynchronizationContext` | The `DirectNSynchronizationContext` posting to this queue. |
 | `UnhandledException` | Exceptions from queued work. |

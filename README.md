@@ -4,42 +4,55 @@
 [![GitHub](https://img.shields.io/github/license/ScarletKuro/Scarlet.Extensions.Hosting.DirectN?color=594ae2&logo=github)](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/LICENSE)
 [![codecov](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/graph/badge.svg?token=BOR54748WR)](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN)
 
-[Microsoft.Extensions.Hosting](https://learn.microsoft.com/dotnet/core/extensions/generic-host) (Generic Host) for
-[DirectN](https://github.com/smourier/DirectNAot) Win32 / Direct2D desktop apps. It runs the DirectN UI thread inside the
-host, the way [Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Microsoft.Extensions.Hosting.Wpf) does for WPF, and
-everything is **Native AOT compatible** (`net10.0-windows`, `IsAotCompatible`, CI publishes with `PublishAot`).
+Unofficial implementation of Microsoft.Extensions.Hosting for [DirectN](https://github.com/smourier/DirectNAot) (Win32 / Direct2D) desktop applications, and the successor of [Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Microsoft.Extensions.Hosting.Wpf) for apps moving off WPF. It runs the DirectN UI thread inside the Generic Host and is **Native AOT compatible** end to end: every package is `IsAotCompatible`, and CI publishes the samples, the scenario app and the tests with `PublishAot`.
+This library also has extension packages for thread switching between the UI thread and the thread pool (`JoinableTaskFactory`, `AsyncLazy<T>`) and a tray icon.
 
-| Package | What it is |
-|---|---|
-| `Scarlet.Extensions.Hosting.DirectN` | The host integration: UI thread, lifetime, components. |
-| `Scarlet.Extensions.Hosting.DirectN.Threading` | `JoinableTaskFactory` / `AsyncLazy<T>` bound to the UI thread ([docs](docs/Threading.md)). |
-| `Scarlet.Extensions.Hosting.DirectN.TrayIcon` | Tray icon with WinForms `NotifyIcon` behavior and a native menu ([docs](docs/TrayIcon.md)). |
-| `Scarlet.DirectN.Threading` | The UI-thread message queue and `SynchronizationContext`, shared with `Scarlet.AspNetCore.Components.WebView.Win32Aot` ([docs](docs/MessageQueue.md)). |
+### [Changelog](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/CHANGELOG.md) | [Migrating from Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/docs/MigratingFromWpf.md)
 
-Coming from Extensions.Hosting.Wpf? See [Migrating from WPF](docs/MigratingFromWpf.md).
+## NuGet Packages
 
-## Getting started
+| Name | Description | Latest version |
+| --- | --- | --- |
+| **Scarlet.Extensions.Hosting.DirectN** | The main library, with **Microsoft.Extensions.Hosting** for DirectN support. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN/) |
+| **Scarlet.Extensions.Hosting.DirectN.TrayIcon** | An extension enabling tray icon support, with WinForms `NotifyIcon` behavior and a native Win32 menu. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.TrayIcon.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN.TrayIcon/) |
+| **Scarlet.Extensions.Hosting.DirectN.Threading** | An extension enabling thread switching between the UI thread and ThreadPool threads via an AOT-compatible extract of **Microsoft.VisualStudio.Threading** (`JoinableTaskFactory`, `AsyncLazy<T>`). | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.Extensions.Hosting.DirectN.Threading.svg)](https://www.nuget.org/packages/Scarlet.Extensions.Hosting.DirectN.Threading/) |
+| **Scarlet.DirectN.Threading** | The UI-thread message queue and `SynchronizationContext`, shared with **Scarlet.AspNetCore.Components.WebView.Win32Aot**. Installed with the main library. | [![NuGet](https://img.shields.io/nuget/vpre/Scarlet.DirectN.Threading.svg)](https://www.nuget.org/packages/Scarlet.DirectN.Threading/) |
+
+## Quick Start
+
+### 1. Create `Program.cs`
+
+Use `Host.CreateApplicationBuilder` from `Microsoft.Extensions.Hosting`. Everything is registered on `builder.Services`
+before calling `Build()`, so the same calls work with any `IHostApplicationBuilder` and inside
+`IHostBuilder.ConfigureServices`. There is no application class to write: the host creates DirectN's `Application`.
 
 ```csharp
+using Microsoft.Extensions.Hosting;
+using Scarlet.Extensions.Hosting.DirectN;
+
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddDirectN();
+builder.Services.AddDirectNLifetime();
+builder.Services.AddDirectNComponent<MainWindowComponent>();
 
-builder.Services.AddDirectN(options =>
-{
-    options.ShutdownMode = ShutdownMode.OnLastWindowClose;   // or OnExplicitShutdown for tray apps
-    options.OnStartup = (services, context) => { /* UI thread, before the message loop */ };
-    options.OnExit = (services, context) => { /* UI thread, after the message loop */ };
-});
-builder.Services.AddDirectNLifetime();                        // optional: windowed-app lifetime instead of ConsoleLifetime
-builder.Services.AddThreadSwitching();                        // optional: JoinableTaskFactory on the UI thread
-builder.Services.AddDirectNComponent<MainWindowComponent>();  // created on the UI thread
+using var host = builder.Build();
+host.Run();
+```
 
-await builder.Build().RunAsync();
+### 2. Create the UI in a component
 
-sealed class MainWindowComponent : IDirectNComponent
+Components are created with their dependencies from the container, initialized on the UI thread before the message loop
+starts, and disposed there (in reverse order) after it ends. The container never disposes them.
+
+```csharp
+using DirectN.Extensions.Utilities;
+using Scarlet.Extensions.Hosting.DirectN;
+
+public sealed class MainWindowComponent : IDirectNComponent
 {
     public void InitializeComponent()
     {
-        var window = new Window("My app");                    // DirectN.Extensions.Utilities.Window
+        var window = new Window("My app");
         window.ResizeClient(800, 600);
         window.Center();
         window.Show();
@@ -47,43 +60,65 @@ sealed class MainWindowComponent : IDirectNComponent
 }
 ```
 
-## How it works
+`AddDirectN` takes options for what WPF's `App` class used to do:
 
-- `AddDirectN()` creates a dedicated STA UI thread (`IDirectNThread.MainThread`). It starts **after every hosted service has
-  started** (in `IHostedLifecycleService.StartedAsync`), so a failing service means no UI is ever created.
-- On the UI thread the host creates the message queue, a DirectN `Application`, runs `OnStartup`, creates and initializes the
-  components in registration order, then runs the message loop. Failures until the loop runs fail host startup
-  (`RunAsync`/`StartAsync` throws) instead of crashing the process.
-- When the application exits on its own (last window closed with `OnLastWindowClose`, `Application.Exit()`, a fatal DirectN
-  error), the host stops. When the host stops (`StopApplication()`, `IDirectNThread.HandleApplicationExit()`, process exit
-  with `DirectNLifetime`), the application exits. Either way the host waits for the UI thread: remaining windows are closed,
-  `OnExit` runs and components are disposed (in reverse order) **on the UI thread, while all services still work**.
-- `IDirectNThread.SynchronizationContext` works at any time: work posted before the UI thread starts runs once it has
-  started; work posted after it ended is dropped and logged, never thrown.
-- Exceptions thrown by work posted to the UI thread raise `IDirectNThread.UnhandledException`; set `Handled` to keep going,
-  otherwise they are logged and terminate the process (like WPF's `DispatcherUnhandledException`).
+```csharp
+builder.Services.AddDirectN(options =>
+{
+    options.ShutdownMode = ShutdownMode.OnExplicitShutdown;          // tray apps; default OnLastWindowClose
+    options.OnStartup = (services, context) => { /* UI thread, before the message loop */ };
+    options.OnExit = (services, context) => { /* UI thread, after the message loop */ };
+});
+```
 
-## API
+The DirectN UI thread is created and started once every hosted service has started, the way ASP.NET Core starts serving
+requests. If any hosted service fails to start, the UI is never created; failures while creating it (in `OnStartup` or a
+component) fail host startup instead of crashing the process. Another hosted service that needs the UI thread can post to
+`IDirectNThread.SynchronizationContext` or use `JoinableTaskFactory.SwitchToMainThreadAsync` at any time: work posted
+before the UI thread exists runs once it has started.
 
-| Member | |
-|---|---|
-| `services.AddDirectN()` / `AddDirectN(Action<DirectNOptions>)` | Runs the DirectN application in the host. Calling it again only adds configuration. |
-| `DirectNOptions.ShutdownMode` | `OnLastWindowClose` (default; DirectN marks windows created after the first as background windows, so in practice this is the main window) or `OnExplicitShutdown`. |
-| `DirectNOptions.OnStartup` / `OnExit` | Callbacks on the UI thread. |
-| `DirectNOptions.ShowFatalErrorDialog` | Keep DirectN's own fatal-error task dialog (default `false`: the host logs instead). |
-| `services.AddDirectNComponent<T>()` / `AddDirectNComponent(factory)` | A component created, initialized and disposed on the UI thread; never disposed by the container. |
-| `services.AddDirectNLifetime()` / `hostBuilder.UseDirectNLifetime()` | `DirectNLifetime` instead of `ConsoleLifetime` (no Ctrl+C handling, status messages, graceful stop on process exit). |
-| `IDirectNThread` | `MainThread`, `SynchronizationContext`, `Context`, `HandleApplicationExit()`, `UnhandledException`. |
-| `IDirectNContext` | `IsRunning`, `Application` (the DirectN `Application`, for advanced use). |
+Started last, the UI is also stopped first: before any hosted service's `StopAsync`, the host waits until the UI thread has
+fully ended (remaining windows closed, `OnExit`, components disposed), up to `HostOptions.ShutdownTimeout`. Application
+cleanup can therefore still use other hosted services and every registered service. When the application exits on its own
+(last window closed, `Application.Exit()`, `IDirectNThread.HandleApplicationExit()`), the host stops.
 
-One DirectN host per process: DirectN allows one `Application` per thread and none after the process-wide exit.
+Known limitations:
+- Waiting for the UI thread is bounded by `HostOptions.ShutdownTimeout`. Application code that blocks longer (in
+  initialization or cleanup) may still run after the host has started disposing services.
+- One DirectN host per process: DirectN allows one `Application` per thread and none after its process-wide exit.
+
+`AddDirectNLifetime()` is optional. With any host lifetime, `AddDirectN` stops the host when the DirectN application
+exits. `DirectNLifetime` replaces the default `ConsoleLifetime` with one suited to a windowed application: no Ctrl+C
+handling or console shutdown hints, status messages (turn them off with
+`AddDirectNLifetime(options => options.SuppressStatusMessages = true)`), and a graceful host shutdown when the process exits.
+
+### 3. Update `.csproj`
+
+```xml
+<PropertyGroup>
+  <OutputType>WinExe</OutputType>
+  <TargetFramework>net10.0-windows</TargetFramework>
+  <PublishAot>true</PublishAot>
+  <ApplicationManifest>app.manifest</ApplicationManifest>
+</PropertyGroup>
+```
+
+The manifest should declare `PerMonitorV2` DPI awareness and Common Controls 6 (themed menus and dialogs); see
+[the sample's manifest](samples/HostingMinimal/app.manifest).
 
 ## Samples
-
-- [`samples/HostingMinimal`](samples/HostingMinimal): a window whose title a `BackgroundService` updates through `JoinableTaskFactory`.
-- [`samples/HostingTrayIcon`](samples/HostingTrayIcon): a windowless tray app with a menu, balloon tips and Exit.
+1. [HostingMinimal](samples/HostingMinimal): Top-level statements with `Host.CreateApplicationBuilder`, a DirectN window created by a component, and a `BackgroundService` updating it through **Threading**.
+2. [HostingTrayIcon](samples/HostingTrayIcon): A windowless tray application (`ShutdownMode.OnExplicitShutdown`) using the **TrayIcon** feature: native menu, balloon tips, and Exit stopping the host.
 
 Both publish with `PublishAot`.
+
+## Documentation
+
+- [Hosting](docs/Hosting.md) — Lifecycle, options, components, unhandled exceptions and the full API
+- [Threading](docs/Threading.md) — Switch between the UI thread and background threads
+- [TrayIcon](docs/TrayIcon.md) — System tray icon support
+- [Message queue](docs/MessageQueue.md) — `Scarlet.DirectN.Threading`, the UI-thread queue under the host
+- [Migrating from Extensions.Hosting.Wpf](docs/MigratingFromWpf.md) — API mapping and a before/after example
 
 ## License
 
