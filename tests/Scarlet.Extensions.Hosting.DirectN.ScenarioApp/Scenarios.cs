@@ -117,6 +117,10 @@ internal static unsafe partial class Scenarios
                 OnStarted(services, sp => sp.GetRequiredService<IDirectNThread>().HandleApplicationExit());
                 return true;
 
+            case "threading":
+                ThreadingScenario.Configure(services);
+                return true;
+
             case "tray":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 services.AddDirectNTrayIcon<ScenarioTrayIcon>();

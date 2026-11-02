@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN\Scarlet.Extensions.Hosting.DirectN.csproj" />
+    <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN.Threading\Scarlet.Extensions.Hosting.DirectN.Threading.csproj" />
     <ProjectReference Include="..\..\src\Scarlet.Extensions.Hosting.DirectN.TrayIcon\Scarlet.Extensions.Hosting.DirectN.TrayIcon.csproj" />
   </ItemGroup>
 

@@ -135,6 +135,21 @@ public class ScenarioTests
     }
 
     [Fact]
+    public void JoinableTaskFactorySwitchesToTheUiThreadBeforeAndAfterItStarts()
+    {
+        var result = ScenarioRunner.Run("threading");
+
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "EarlySwitch|ui",
+            "SwitchedToMain|ui",
+            "RunOnMain|ui",
+            "AsyncLazy|ui:ui:1",
+            "BackToBackground|other",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
     public void TrayIconIsCreatedAndDisposedOnTheUiThread()
     {
         var result = ScenarioRunner.Run("tray");
