@@ -29,7 +29,7 @@ namespace Scarlet.DirectN.Threading;
 /// <see cref="InvalidOperationException"/> because the queue was closed or its thread exited first.
 /// </para>
 /// </remarks>
-public sealed unsafe partial class DirectNMessageQueue
+public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
 {
     private const string WakeMessageName = "Scarlet.DirectN.Threading.DirectNMessageQueue";
 
@@ -71,6 +71,7 @@ public sealed unsafe partial class DirectNMessageQueue
     private ExecutionContext? _baselineContext;
     private readonly HWND _hwnd;
     private readonly OwnerThreadExitHandle? _ownerExit;
+    private readonly RegisteredWaitHandle? _ownerExitRegistration;
     private readonly Timer _wakeRetry;
     private GCHandle _self;
 
@@ -126,6 +127,13 @@ public sealed unsafe partial class DirectNMessageQueue
         _self = GCHandle.Alloc(this, GCHandleType.Weak);
         Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(_self));
         _hwnd = hwnd;
+        // Observe exit even when no more posts arrive: otherwise an accepted InvokeAsync could wait forever.
+        if (_ownerExit is { } exitHandle)
+        {
+            _ownerExitRegistration = ThreadPool.UnsafeRegisterWaitForSingleObject(exitHandle,
+                static (state, _) => ((DirectNMessageQueue)state!).StopAcceptingWork(QueueCloseReason.OwnerThreadExited),
+                this, Timeout.Infinite, executeOnlyOnce: true);
+        }
     }
 
     /// <summary>
@@ -170,7 +178,7 @@ public sealed unsafe partial class DirectNMessageQueue
     /// Returns whether the calling thread is the UI thread that owns this queue.
     /// </summary>
     /// <returns><see langword="true"/> on the owning thread.</returns>
-    public bool CheckAccess() => Environment.CurrentManagedThreadId == ManagedThreadId;
+    public override bool CheckAccess() => Environment.CurrentManagedThreadId == ManagedThreadId;
 
     /// <summary>
     /// Queues <paramref name="callback"/> to run on the UI thread.
@@ -196,6 +204,10 @@ public sealed unsafe partial class DirectNMessageQueue
     /// while the queue is being closed may still be dropped by the closing.
     /// </returns>
     public bool TryPost(SendOrPostCallback callback, object? state) => TryPostAbandonable(callback, state, onAbandoned: null);
+
+    /// <inheritdoc />
+    protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned) =>
+        TryPostAbandonable(callback, state, onAbandoned);
 
     /// <summary>
     /// Queues <paramref name="callback"/>, with what to do if it is dropped without running (closing the queue, or the owner
@@ -250,6 +262,7 @@ public sealed unsafe partial class DirectNMessageQueue
         }
 
         // 2. Release the native resources: only here, on the owner thread, and only once.
+        _ownerExitRegistration?.Unregister(null);
         _wakeRetry.Dispose();
         Functions.DestroyWindow(_hwnd);
         _self.Free();
@@ -666,16 +679,4 @@ public sealed unsafe partial class DirectNMessageQueue
             SafeWaitHandle = handle;
         }
     }
-}
-
-/// <summary>
-/// Why a <see cref="DirectNMessageQueue"/> stopped accepting work (diagnostics).
-/// </summary>
-internal enum QueueCloseReason
-{
-    None,
-    Closed,
-    OwnerExitedDuringSend,
-    OwnerThreadExited,
-    WindowGone,
 }

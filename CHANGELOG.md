@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+- `DirectNDispatcher` with `InvokeAsync` overloads for actions, results and asynchronous callbacks, cancellation before execution, and `VerifyAccess`. `DirectNMessageQueue` inherits this API; `IDirectNThread.Dispatcher` and a registered `DirectNDispatcher` expose it through the host, including startup buffering and failure notification.
+
+### Fixed
+- Observe owner-thread exit without requiring another post, so accepted invocations are faulted if their queue is abandoned without `Close()`.
+
 ## [1.0.0] - 2026-11-02
 
 First release: Microsoft.Extensions.Hosting for DirectN (Win32 / Direct2D) applications, Native AOT compatible (`net10.0-windows`).

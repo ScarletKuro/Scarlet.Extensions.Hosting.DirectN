@@ -14,6 +14,13 @@ public interface IDirectNThread
     Thread MainThread { get; }
 
     /// <summary>
+    /// Gets the awaitable UI dispatcher. Calls made before startup are buffered until the application starts;
+    /// shutdown or failed startup faults invocations that have not started. Do not await these calls inside
+    /// a hosted service's StartAsync: the UI thread starts only after every StartAsync has returned.
+    /// </summary>
+    DirectNDispatcher Dispatcher { get; }
+
+    /// <summary>
     /// Gets a <see cref="SynchronizationContext"/> that runs work on the UI thread. Usable at any time: work posted before the
     /// UI thread has started runs once it has started; work posted after it has ended is dropped (and logged), never thrown.
     /// </summary>

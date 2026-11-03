@@ -73,6 +73,10 @@ internal static class Program
 #pragma warning restore CA1031
         {
             Report("HostFailed", $"{exception.GetType().Name}: {exception.Message}");
+            if (scenario == "invoke-async-failure")
+            {
+                InvokeAsyncScenario.ReportStartupFailure();
+            }
             return HostFailedExitCode;
         }
 

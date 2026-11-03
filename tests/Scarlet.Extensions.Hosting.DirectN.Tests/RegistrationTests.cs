@@ -33,6 +33,7 @@ public class RegistrationTests
 
         var thread = provider.GetRequiredService<IDirectNThread>();
         Assert.Same(provider.GetRequiredService<DirectNThread>(), thread);
+        Assert.Same(thread.Dispatcher, provider.GetRequiredService<global::Scarlet.DirectN.Threading.DirectNDispatcher>());
         Assert.Same(provider.GetRequiredService<IDirectNContext>(), thread.Context);
         Assert.Equal(ApartmentState.STA, thread.MainThread.GetApartmentState());
         Assert.True(thread.MainThread.IsBackground);

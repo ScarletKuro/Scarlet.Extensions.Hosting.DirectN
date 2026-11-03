@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/graph/badge.svg?token=BOR54748WR)](https://codecov.io/gh/ScarletKuro/Scarlet.Extensions.Hosting.DirectN)
 
 Unofficial implementation of Microsoft.Extensions.Hosting for [DirectN](https://github.com/smourier/DirectNAot) (Win32 / Direct2D) desktop applications, and the successor of [Extensions.Hosting.Wpf](https://github.com/ScarletKuro/Microsoft.Extensions.Hosting.Wpf) for apps moving off WPF. It runs the DirectN UI thread inside the Generic Host and is **Native AOT compatible** end to end: every package is `IsAotCompatible`, and CI publishes the samples, the scenario app and the tests with `PublishAot`.
-This library also has extension packages for thread switching between the UI thread and the thread pool (`JoinableTaskFactory`, `AsyncLazy<T>`) and a tray icon.
+The main package registers `DirectNDispatcher` for awaitable UI operations (`InvokeAsync`). Extension packages provide thread switching between the UI thread and the thread pool (`JoinableTaskFactory`, `AsyncLazy<T>`) and a tray icon.
 
 ### [Changelog](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/CHANGELOG.md) | [Wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki)
 

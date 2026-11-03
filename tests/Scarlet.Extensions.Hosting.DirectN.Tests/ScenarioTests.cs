@@ -6,6 +6,28 @@ namespace Scarlet.Extensions.Hosting.DirectN.Tests;
 public class ScenarioTests
 {
     [Fact]
+    public void InvokeAsyncBuffersBeforeStartupAndAwaitsAsyncCallbacks()
+    {
+        var result = ScenarioRunner.Run("invoke-async");
+        result.AssertExitCode(0);
+        result.AssertEvents(
+            "EarlyInvocation|ui:True:early-caller",
+            "AsyncInvocation|ui",
+            "InvocationFailure|observed",
+            "HostStopped|not-running");
+    }
+
+    [Fact]
+    public void FailedStartupFaultsBufferedInvocations()
+    {
+        var result = ScenarioRunner.Run("invoke-async-failure");
+        result.AssertExitCode(ScenarioRunner.HostFailedExitCode);
+        result.AssertEvents(
+            "HostFailed|InvalidOperationException: invocation startup failure",
+            "BufferedInvocation|faulted");
+    }
+
+    [Fact]
     public void HostStopRunsStartupComponentsAndCleanupOnTheUiThreadInOrder()
     {
         var result = ScenarioRunner.Run("stop");
