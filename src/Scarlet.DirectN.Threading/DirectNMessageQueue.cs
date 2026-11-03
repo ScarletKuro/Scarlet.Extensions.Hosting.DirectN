@@ -212,7 +212,7 @@ public sealed unsafe partial class DirectNMessageQueue
 
         var item = new WorkItem(callback, state, ExecutionContext.Capture(), onAbandoned);
         _queue.Enqueue(item);
-        TestHook?.Invoke(PostStage.Enqueued);
+        PostStageReachedForTests?.Invoke(PostStage.Enqueued);
 
         // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop what is left here.
         // The item may still have run first: the owner thread can take it while draining, before closing.
@@ -222,7 +222,7 @@ public sealed unsafe partial class DirectNMessageQueue
             return !item.WasAbandoned();
         }
 
-        TestHook?.Invoke(PostStage.Waking);
+        PostStageReachedForTests?.Invoke(PostStage.Waking);
 
         // A failed wake-up means the queue was found closed or its thread gone, and everything still queued was dropped. The
         // owner thread may have taken this item before that (and closed the queue itself, destroying the window the wake-up
@@ -279,9 +279,11 @@ public sealed unsafe partial class DirectNMessageQueue
     public int DroppedCount => Volatile.Read(ref _dropped);
 
     /// <summary>
-    /// Called by TryPost at <see cref="PostStage"/> points, so tests can establish interleavings with the owner thread.
+    /// Tests only: called on the posting thread at each <see cref="PostStage"/> of TryPost, so a test can make the owner thread
+    /// act (e.g. close the queue) at that exact point. The races there are a few instructions wide and can't be forced from
+    /// outside. Never set in production; it costs one null check per post.
     /// </summary>
-    internal Action<PostStage>? TestHook { get; set; }
+    internal Action<PostStage>? PostStageReachedForTests;
 
     internal enum PostStage
     {

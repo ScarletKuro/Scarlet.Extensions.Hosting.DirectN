@@ -82,7 +82,7 @@ public class QueueRobustnessTests
 
         // The owner thread is draining its queue. Let it run the new item, which closes the queue (destroying its window),
         // while the poster is still between queuing it and waking the thread.
-        queue.TestHook = reached =>
+        queue.PostStageReachedForTests = reached =>
         {
             if (reached == stage)
             {
@@ -96,7 +96,7 @@ public class QueueRobustnessTests
             ran = true;
             queue.Close();
         }, null);
-        queue.TestHook = null;
+        queue.PostStageReachedForTests = null;
 
         Assert.True(ran);
         Assert.True(posted, "TryPost reported work that ran as rejected.");
