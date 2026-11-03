@@ -3755,6 +3755,41 @@ public class JoinableTaskTests : JoinableTaskTestBase
         });
     }
 
+    /// <summary>
+    /// Holds <paramref name="lockObject"/> until <paramref name="unblock"/> is set. On a dedicated thread, with its own timeout:
+    /// upstream uses a thread-pool task and the test's <see cref="TestBase.TimeoutToken"/>, which under a busy pool can already be
+    /// cancelled when the task starts, so the lock is released at once and the test's precondition fails.
+    /// </summary>
+    private static Task HoldLock(object lockObject, ManualResetEventSlim taken, ManualResetEventSlim unblock)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                lock (lockObject)
+                {
+                    taken.Set();
+                    if (!unblock.Wait(UnexpectedTimeout))
+                    {
+                        throw new TimeoutException("The test never released the lock.");
+                    }
+                }
+
+                done.SetResult();
+            }
+            catch (Exception ex)
+            {
+                done.SetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        thread.Start();
+        return done.Task;
+    }
+
     [Fact]
     public void IsCompletedTrueDoesNotLock()
     {
@@ -3766,14 +3801,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3798,14 +3826,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3830,14 +3851,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3866,14 +3880,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3900,14 +3907,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3932,14 +3932,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));
@@ -3970,14 +3963,7 @@ public class JoinableTaskTests : JoinableTaskTestBase
 
         var lockTaken = new ManualResetEventSlim();
         var unblockLock = new ManualResetEventSlim();
-        var lockHolder = Task.Run(() =>
-        {
-            lock (syncContextLock)
-            {
-                lockTaken.Set();
-                unblockLock.Wait(this.TimeoutToken);
-            }
-        });
+        var lockHolder = HoldLock(syncContextLock, lockTaken, unblockLock);
 
         lockTaken.Wait();
         Assert.False(Monitor.TryEnter(syncContextLock));

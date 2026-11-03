@@ -95,7 +95,7 @@ overrides of `protected internal` members declared `protected internal override`
 
 | Local file | Upstream file | Local modifications |
 |---|---|---|
-| `JoinableTaskTests.cs` | `test/…/JoinableTaskTests.cs` | Removed: `CallContextWasOverwrittenByReentrance` (AsyncReaderWriterLock), `SendToSyncContextCapturedFromWithinRunSynchronously` (AsyncCountdownEvent), `SwitchToMainThreadMemoryLeak`, `SwitchToMainThreadMemoryLeakWithCancellationToken`, `RunSynchronouslyTask[OfT]{No,With}YieldGCPressure` (out-of-process isolation + GC pressure measurements), `PrintActiveTasksReport` (hang report). |
+| `JoinableTaskTests.cs` | `test/…/JoinableTaskTests.cs` | Removed: `CallContextWasOverwrittenByReentrance` (AsyncReaderWriterLock), `SendToSyncContextCapturedFromWithinRunSynchronously` (AsyncCountdownEvent), `SwitchToMainThreadMemoryLeak`, `SwitchToMainThreadMemoryLeakWithCancellationToken`, `RunSynchronouslyTask[OfT]{No,With}YieldGCPressure` (out-of-process isolation + GC pressure measurements), `PrintActiveTasksReport` (hang report). The seven `*DoesNotLock` tests hold the lock on a dedicated thread with their own timeout instead of a thread-pool task waiting on `TimeoutToken`, which a busy pool could start after the token was cancelled. |
 | `JoinableTaskFactoryTests.cs` | `test/…/JoinableTaskFactoryTests.cs` | — |
 | `JoinableTaskContextTests.cs` | `test/…/JoinableTaskContextTests.cs` | Removed the five `GetHangReport*` tests (hang report / DGML). |
 | `JoinableTaskCollectionTests.cs` | `test/…/JoinableTaskCollectionTests.cs` | — |
