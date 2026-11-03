@@ -66,6 +66,11 @@ internal static class InvokeAsyncScenario
         public Task StartAsync(CancellationToken cancellationToken)
         {
             CallerValue.Value = "early-caller";
+            thread.Dispatcher.Post(() => Program.Report("EarlyPost", $"{Program.Where()}:{CallerValue.Value}"));
+            if (!thread.Dispatcher.TryPost(() => Program.Report("EarlyTryPost", $"{Program.Where()}:{CallerValue.Value}")))
+            {
+                throw new InvalidOperationException("The dispatcher rejected work before startup.");
+            }
             s_earlyInvocation = thread.Dispatcher.InvokeAsync(() =>
             {
                 thread.Dispatcher.VerifyAccess();

@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ## [Unreleased]
 
 ### Added
+- `DirectNDispatcher.Post(Action)` and `TryPost(Action)` for fire-and-forget UI work, available through the queue and host dispatcher. Document the subclass enqueue contract, including execution context, rejection and abandonment guarantees.
 - `DirectNDispatcher` with `InvokeAsync` overloads for actions, results and asynchronous callbacks, cancellation before execution, and `VerifyAccess`. `DirectNMessageQueue` inherits this API; `IDirectNThread.Dispatcher` and a registered `DirectNDispatcher` expose it through the host, including startup buffering and failure notification.
 
 ### Fixed
+- Require a native owner-thread handle when creating a queue, failing explicitly if it cannot be opened. Every successful queue creation now establishes owner-exit monitoring; `Send` no longer needs fallback polling.
 - Observe owner-thread exit without requiring another post, so accepted invocations are faulted if their queue is abandoned without `Close()`.
 
 ## [1.0.0] - 2026-11-02

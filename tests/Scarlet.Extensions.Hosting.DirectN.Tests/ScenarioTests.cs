@@ -11,6 +11,8 @@ public class ScenarioTests
         var result = ScenarioRunner.Run("invoke-async");
         result.AssertExitCode(0);
         result.AssertEvents(
+            "EarlyPost|ui:early-caller",
+            "EarlyTryPost|ui:early-caller",
             "EarlyInvocation|ui:True:early-caller",
             "AsyncInvocation|ui",
             "InvocationFailure|observed",

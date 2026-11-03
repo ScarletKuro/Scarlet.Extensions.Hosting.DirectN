@@ -1,6 +1,6 @@
 namespace Scarlet.DirectN.Threading;
 
-/// <summary>Schedules awaitable work on a DirectN UI thread.</summary>
+/// <summary>Schedules work on a DirectN UI thread, with optional completion tracking.</summary>
 /// <remarks>
 /// Invocations always enqueue, even on the owning thread. Callback exceptions are observed through the returned task,
 /// rather than the queue's unhandled-exception event. Cancellation only prevents a callback from starting; once started,
@@ -21,6 +21,40 @@ public abstract class DirectNDispatcher
         {
             throw new InvalidOperationException("This operation must run on the DirectN UI thread.");
         }
+    }
+
+    /// <summary>Queues an action on the UI thread without waiting for completion.</summary>
+    /// <param name="callback">The action to enqueue.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="callback"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">The dispatcher no longer accepts work.</exception>
+    /// <remarks>
+    /// Always queues, including on the owning thread. Accepted work may still be dropped during shutdown.
+    /// Callback exceptions use the UI thread's unhandled-exception path. Use InvokeAsync for completion tracking
+    /// or asynchronous callbacks.
+    /// </remarks>
+    public void Post(Action callback)
+    {
+        if (!TryPost(callback))
+        {
+            throw DirectNMessageQueue.QueueClosedException();
+        }
+    }
+
+    /// <summary>Tries to queue an action on the UI thread without waiting for completion.</summary>
+    /// <param name="callback">The action to enqueue.</param>
+    /// <returns>
+    /// False only when the action cannot run because the dispatcher no longer accepts work. True means it was accepted;
+    /// accepted work may still be dropped during shutdown.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="callback"/> is null.</exception>
+    /// <remarks>
+    /// Always queues, including on the owning thread. Callback exceptions use the UI thread's unhandled-exception path.
+    /// Use InvokeAsync for completion tracking or asynchronous callbacks.
+    /// </remarks>
+    public bool TryPost(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return TryEnqueue(static state => ((Action)state!)(), callback, static _ => { });
     }
 
     /// <summary>Queues an action and completes when it returns.</summary>
@@ -79,7 +113,16 @@ public abstract class DirectNDispatcher
     /// <param name="callback">The callback to enqueue.</param>
     /// <param name="state">State shared by the callbacks.</param>
     /// <param name="onAbandoned">Called if accepted work is dropped without running.</param>
-    /// <returns>False if the work was rejected; otherwise true.</returns>
+    /// <returns>False only if the callback cannot run; otherwise true.</returns>
+    /// <remarks>
+    /// Implementations must be thread-safe and always enqueue work, never invoke it inline. Preserve the caller's
+    /// ExecutionContext and install the owning UI thread's SynchronizationContext while running the callback.
+    /// If returning true, eventually invoke exactly one of callback or onAbandoned with state, even on shutdown or
+    /// owner-thread exit. Callback execution and abandonment must be mutually exclusive. Abandonment may be reported
+    /// before this method returns, including when it returns false; callers must tolerate that notification.
+    /// Expected shutdown or rejection must return false rather than throw. Route callback exceptions through the
+    /// UI thread's unhandled-exception path and never let them escape a native callback boundary.
+    /// </remarks>
     protected abstract bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned);
 
     private Task<T> EnqueueSynchronous<T>(Func<T> callback, CancellationToken cancellationToken)

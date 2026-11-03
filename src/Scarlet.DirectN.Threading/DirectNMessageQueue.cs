@@ -23,7 +23,7 @@ namespace Scarlet.DirectN.Threading;
 /// (the host, other libraries, the app) shares the same ordering, exception path and <see cref="SynchronizationContext"/>.
 /// </para>
 /// <para>
-/// Guarantees: <see cref="TryPost"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
+/// Guarantees: <see cref="TryPost(SendOrPostCallback, object)"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
 /// its thread has exited); transient failures such as a full thread message queue are retried. A cross-thread
 /// <see cref="DirectNSynchronizationContext.Send"/> returns once the work ran (while the thread processes messages), or throws
 /// <see cref="InvalidOperationException"/> because the queue was closed or its thread exited first.
@@ -69,8 +69,8 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
     // suppressed runs in it, so that work is isolated from other callbacks too.
     private ExecutionContext? _baselineContext;
     private readonly HWND _hwnd;
-    private readonly OwnerThreadExitHandle? _ownerExit;
-    private readonly RegisteredWaitHandle? _ownerExitRegistration;
+    private readonly OwnerThreadExitHandle _ownerExit;
+    private readonly RegisteredWaitHandle _ownerExitRegistration;
     private readonly Timer _wakeRetry;
     private GCHandle _self;
 
@@ -90,14 +90,10 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
         Thread = Thread.CurrentThread;
         SynchronizationContext = new DirectNSynchronizationContext(this);
         _baselineContext = ExecutionContext.Capture();
+        // Every queue must observe owner exit, including when no more posts arrive. Fail construction if the handle
+        // cannot be opened rather than accepting invocations that could remain incomplete after unexpected thread exit.
+        _ownerExit = new OwnerThreadExitHandle(OpenOwnerThreadHandle(Functions.GetCurrentThreadId()));
         _wakeRetry = new Timer(static state => ((DirectNMessageQueue)state!).RetryWake(), this, Timeout.Infinite, Timeout.Infinite);
-
-        // Signaled when the OS thread terminates, so a waiting Send is released even if the thread exits without Close.
-        var ownerThread = OpenThread(SYNCHRONIZE, 0, Functions.GetCurrentThreadId());
-        if (ownerThread != 0)
-        {
-            _ownerExit = new OwnerThreadExitHandle(new SafeWaitHandle(ownerThread, ownsHandle: true));
-        }
 
         EnsureWindowClassRegistered();
 
@@ -127,12 +123,9 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
         Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(_self));
         _hwnd = hwnd;
         // Observe exit even when no more posts arrive: otherwise an accepted InvokeAsync could wait forever.
-        if (_ownerExit is { } exitHandle)
-        {
-            _ownerExitRegistration = ThreadPool.UnsafeRegisterWaitForSingleObject(exitHandle,
-                static (state, _) => ((DirectNMessageQueue)state!).StopAcceptingWork(QueueCloseReason.OwnerThreadExited),
-                this, Timeout.Infinite, executeOnlyOnce: true);
-        }
+        _ownerExitRegistration = ThreadPool.UnsafeRegisterWaitForSingleObject(_ownerExit,
+            static (state, _) => ((DirectNMessageQueue)state!).StopAcceptingWork(QueueCloseReason.OwnerThreadExited),
+            this, Timeout.Infinite, executeOnlyOnce: true);
     }
 
     /// <summary>
@@ -171,6 +164,7 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
     /// Must be called on the UI thread, which must run a message loop for queued work to execute.
     /// </summary>
     /// <returns>The queue of the current thread.</returns>
+    /// <exception cref="Win32Exception">The owner-thread handle or message-only window could not be created.</exception>
     public static DirectNMessageQueue GetOrCreateForCurrentThread() => t_current ??= new DirectNMessageQueue();
 
     /// <summary>
@@ -261,7 +255,7 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
         }
 
         // 2. Release the native resources: only here, on the owner thread, and only once.
-        _ownerExitRegistration?.Unregister(null);
+        _ownerExitRegistration.Unregister(null);
         _wakeRetry.Dispose();
         Functions.DestroyWindow(_hwnd);
         _self.Free();
@@ -313,27 +307,9 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
     internal void WaitForSend(DirectNSynchronizationContext.SendWork send)
     {
         var done = send.Done;
-        if (_ownerExit is { } ownerExit)
+        if (WaitHandle.WaitAny([done.WaitHandle, _ownerExit]) == 0)
         {
-            if (WaitHandle.WaitAny([done.WaitHandle, ownerExit]) == 0)
-            {
-                return;
-            }
-        }
-        else
-        {
-            while (!done.Wait(100))
-            {
-                if (!Thread.IsAlive)
-                {
-                    break;
-                }
-            }
-
-            if (done.IsSet)
-            {
-                return;
-            }
+            return;
         }
 
         // The owner exited without finishing the work, so it never will.
@@ -551,6 +527,17 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial nint OpenThread(uint dwDesiredAccess, int bInheritHandle, uint dwThreadId);
+
+    internal static SafeWaitHandle OpenOwnerThreadHandle(uint threadId)
+    {
+        var handle = OpenThread(SYNCHRONIZE, 0, threadId);
+        if (handle == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        return new SafeWaitHandle(handle, ownsHandle: true);
+    }
 
     private static uint RegisterWakeMessage()
     {

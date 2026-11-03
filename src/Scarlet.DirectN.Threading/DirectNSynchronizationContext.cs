@@ -28,7 +28,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
     /// Queues <paramref name="d"/> to run on the UI thread. Never throws: once the queue is closed (or its thread has exited)
     /// the work is dropped, like WPF's and WinForms' contexts do after shutdown. This is the context <c>await</c> resumes on, and
     /// the runtime turns an exception thrown here into an unhandled exception that terminates the process. Use
-    /// <see cref="DirectNMessageQueue.TryPost"/> to know whether the work was queued.
+    /// <see cref="DirectNMessageQueue.TryPost(SendOrPostCallback, object)"/> to know whether the work was queued.
     /// </summary>
     /// <param name="d">The work to run.</param>
     /// <param name="state">The state passed to <paramref name="d"/>.</param>

@@ -5,6 +5,18 @@ namespace Scarlet.Extensions.Hosting.DirectN.Tests;
 public class DispatcherTests
 {
     [Fact]
+    public void PostsBufferBeforeStartupAndRejectAfterDisposal()
+    {
+        using var provider = new ServiceCollection().AddDirectN().BuildServiceProvider();
+        var dispatcher = provider.GetRequiredService<IDirectNThread>().Dispatcher;
+        dispatcher.Post(() => Assert.Fail("UI never started"));
+        Assert.True(dispatcher.TryPost(() => Assert.Fail("UI never started")));
+        provider.Dispose();
+        Assert.False(dispatcher.TryPost(() => { }));
+        Assert.Throws<InvalidOperationException>(() => dispatcher.Post(() => { }));
+    }
+
+    [Fact]
     public async Task DisposingBeforeStartupFaultsBufferedAndFutureInvocations()
     {
         var provider = new ServiceCollection().AddDirectN().BuildServiceProvider();

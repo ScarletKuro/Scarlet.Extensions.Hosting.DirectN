@@ -11,21 +11,29 @@ SynchronizationContext.SetSynchronizationContext(queue.SynchronizationContext);
 queue.UnhandledException += (_, e) => { Log(e.Exception); e.Handled = true; };
 
 // From any thread:
-queue.Post(_ => window.Text = "Updated", null);
+queue.Post(() => window.Text = "Updated");
+bool accepted = queue.TryPost(() => window.Text = "Updated again");
 
 // Await completion, observe failures, or return a value:
 await queue.InvokeAsync(() => { window.Text = "Updated"; }, cancellationToken);
 var title = await queue.InvokeAsync(() => window.Text, cancellationToken);
 ```
 
-`DirectNMessageQueue` inherits `DirectNDispatcher`, which provides four overloads:
+`DirectNMessageQueue` inherits `DirectNDispatcher`, which provides fire-and-forget posting and four awaitable overloads:
 
 ```csharp
+void Post(Action callback);
+bool TryPost(Action callback);
 Task InvokeAsync(Action callback, CancellationToken cancellationToken = default);
 Task<T> InvokeAsync<T>(Func<T> callback, CancellationToken cancellationToken = default);
 Task InvokeAsync(Func<Task> callback, CancellationToken cancellationToken = default);
 Task<T> InvokeAsync<T>(Func<Task<T>> callback, CancellationToken cancellationToken = default);
 ```
+
+`Post` and `TryPost` always enqueue, including on the UI thread. `Post` throws `InvalidOperationException` if the work is
+rejected; `TryPost` returns `false`. Accepted posts may still be dropped during shutdown. Exceptions thrown by posted
+callbacks use the queue's `UnhandledException` event. Use `InvokeAsync` for asynchronous callbacks or to observe completion
+and exceptions. The queue also retains its `SendOrPostCallback` and state overloads for lower-level integrations.
 
 Invocations always enqueue, including on the UI thread. The async overloads wait for the full callback, with UI context
 capture working across its awaits unless it uses `ConfigureAwait(false)`. Callback exceptions fault the returned task
@@ -43,6 +51,10 @@ faults buffered calls on failed startup or disposal, and uses the queue once ava
 hosted service's `StartAsync`: the UI starts after every `StartAsync` returns. Use a background service or
 `IHostApplicationLifetime.ApplicationStarted`. Work buffered before the queue exists waits until application startup;
 work posted once the queue exists may run earlier, including during startup modal loops.
+
+Custom `DirectNDispatcher` subclasses must implement the documented `TryEnqueue` contract: enqueue safely from any thread,
+preserve execution context, install the UI synchronization context, and notify accepted work of execution or abandonment.
+Shutdown rejection returns `false`; it must not throw from the enqueue implementation.
 
 - Work is kept in memory and a single wake-up message is posted to a message-only window of the UI thread. Window messages are
   dispatched by every message loop, **including modal ones** (menus, message boxes, task dialogs, window move/resize), so queued
@@ -67,6 +79,8 @@ work posted once the queue exists may run earlier, including during startup moda
 - The queue has no capacity limit: don't flood the UI thread with unbounded work.
 - Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread
   exits without it is still released by the garbage collector.
+- Queue creation requires a native owner-thread handle to observe unexpected exit. If acquiring it fails, creation throws
+  `Win32Exception`, rather than accepting work whose completion could no longer be guaranteed before execution.
 
 | Member | |
 |---|---|
