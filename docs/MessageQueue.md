@@ -17,8 +17,9 @@ queue.Post(_ => window.Text = "Updated", null);
 - Work is kept in memory and a single wake-up message is posted to a message-only window of the UI thread. Window messages are
   dispatched by every message loop, **including modal ones** (menus, message boxes, task dialogs, window move/resize), so queued
   work never stalls while one of those is open. Thread messages (`PostThreadMessage`) would be lost there.
-- At most 256 items run per wake-up. When more are queued and input, paint or timer messages are pending, the queue continues
-  from a timer (retrieved after all of them, as WPF does for background work), so a flood of posts can't starve them.
+- At most 256 items, and no new item after about 15 ms (a frame), run per wake-up; a single long item can't be interrupted.
+  When more are queued and input, paint or timer messages are pending, the queue continues from a timer (retrieved after
+  all of them, as WPF does for background work), so a flood of posts can't starve them.
 - Like WPF's Dispatcher and WinForms' `BeginInvoke`, each item runs in the `ExecutionContext` captured from its caller
   (`AsyncLocal` values, culture), and what it changes there doesn't leak into later items. Work posted with flow suppressed
   runs in the UI thread's own baseline context.

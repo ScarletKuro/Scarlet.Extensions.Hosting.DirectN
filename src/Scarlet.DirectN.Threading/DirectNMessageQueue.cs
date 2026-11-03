@@ -39,6 +39,9 @@ public sealed unsafe partial class DirectNMessageQueue
     // Upper bound of work items run per wake-up so a flood of posts can't starve input, paint and timer messages.
     private const int MaxItemsPerWakeUp = 256;
 
+    // And at most about a frame of work per wake-up: 256 items of a few milliseconds each would keep input waiting for seconds.
+    private static readonly long MaxTicksPerWakeUp = System.Diagnostics.Stopwatch.Frequency * 15 / 1000;
+
     // The timer that continues a backlog once pending input, paint and timer messages have had their turn.
     private const nuint ContinueTimerId = 1;
     private const uint WM_TIMER = 0x0113;
@@ -396,15 +399,22 @@ public sealed unsafe partial class DirectNMessageQueue
         Interlocked.Exchange(ref _wakePending, 0);
 
         var processed = 0;
+        var deadline = System.Diagnostics.Stopwatch.GetTimestamp() + MaxTicksPerWakeUp;
         while (processed < MaxItemsPerWakeUp && Volatile.Read(ref _closed) == 0 && _queue.TryDequeue(out var item))
         {
             processed++;
             Execute(item);
+
+            // A single long item can't be interrupted; the budget only decides when to stop starting new ones.
+            if (System.Diagnostics.Stopwatch.GetTimestamp() >= deadline)
+            {
+                break;
+            }
         }
 
         if (Volatile.Read(ref _closed) == 0 && !_queue.IsEmpty)
         {
-            // More work than one wake-up's worth. Posted messages are retrieved before input, paint and timer messages, so
+            // More work than one wake-up's worth (items or time). Posted messages are retrieved before input, paint and timer messages, so
             // another wake-up message would starve those: when any is pending, continue from a timer instead (retrieved after
             // all of them), as WPF does for background work.
             if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0 && YieldToPendingMessages())

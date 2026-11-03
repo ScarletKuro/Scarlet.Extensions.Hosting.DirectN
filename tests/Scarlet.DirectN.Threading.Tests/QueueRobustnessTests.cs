@@ -83,6 +83,36 @@ public class QueueRobustnessTests
     }
 
     [Fact]
+    public async Task ABacklogOfSlowerCallbacksStillLetsTimersRunEveryFewMilliseconds()
+    {
+        using var loop = new MessageLoopThread();
+        var timer = await loop.InvokeAsync(() => ThreadTimer.Start(10));
+        Assert.NotEqual(0u, (uint)timer);
+        try
+        {
+            // 2 ms each: a whole wake-up's worth of items (256) would keep the timer waiting for half a second.
+            const int Items = 600;
+            var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            ThreadTimer.ResetLongestGap();
+            for (var i = 0; i < Items; i++)
+            {
+                loop.Queue.Post(static _ => Spin(TimeSpan.FromMilliseconds(2)), null);
+            }
+
+            loop.Queue.Post(_ => done.SetResult(), null);
+            await done.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            var gap = ThreadTimer.LongestGap;
+
+            // A time budget per wake-up (about a frame) plus the timer's own granularity (about 16 ms), with room for a busy machine.
+            Assert.True(gap < TimeSpan.FromMilliseconds(150), $"The timer waited up to {gap.TotalMilliseconds:F0} ms during the backlog.");
+        }
+        finally
+        {
+            await loop.InvokeAsync(() => ThreadTimer.Stop(timer));
+        }
+    }
+
+    [Fact]
     public async Task ABacklogOfPostsDoesntStarveTimers()
     {
         using var loop = new MessageLoopThread();
@@ -139,15 +169,41 @@ public class QueueRobustnessTests
 internal static unsafe partial class ThreadTimer
 {
     private static int s_ticks;
+    private static long s_lastTick;
+    private static long s_maxGap;
 
     public static int Ticks => Volatile.Read(ref s_ticks);
+
+    /// <summary>
+    /// Starts measuring the longest time without a tick, from now.
+    /// </summary>
+    public static void ResetLongestGap()
+    {
+        Volatile.Write(ref s_maxGap, 0);
+        Volatile.Write(ref s_lastTick, Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>
+    /// Gets the longest time without a tick since <see cref="ResetLongestGap"/>, up to now.
+    /// </summary>
+    public static TimeSpan LongestGap =>
+        Stopwatch.GetElapsedTime(0, Math.Max(Volatile.Read(ref s_maxGap), Stopwatch.GetTimestamp() - Volatile.Read(ref s_lastTick)));
 
     public static nuint Start(uint milliseconds) => SetTimer(0, 0, milliseconds, &OnTick);
 
     public static bool Stop(nuint timer) => KillTimer(0, timer);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
-    private static void OnTick(nint hwnd, uint msg, nuint id, uint time) => Interlocked.Increment(ref s_ticks);
+    private static void OnTick(nint hwnd, uint msg, nuint id, uint time)
+    {
+        Interlocked.Increment(ref s_ticks);
+        var now = Stopwatch.GetTimestamp();
+        var gap = now - Interlocked.Exchange(ref s_lastTick, now);
+        if (gap > Volatile.Read(ref s_maxGap))
+        {
+            Volatile.Write(ref s_maxGap, gap);
+        }
+    }
 
     [LibraryImport("user32.dll")]
     private static partial nuint SetTimer(nint hwnd, nuint id, uint elapse, delegate* unmanaged[Stdcall]<nint, uint, nuint, uint, void> timerProc);
