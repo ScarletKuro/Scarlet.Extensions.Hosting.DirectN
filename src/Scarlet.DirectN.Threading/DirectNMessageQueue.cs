@@ -50,7 +50,6 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
     // Parent handle that makes CreateWindowEx create a message-only window.
     private const nint HWND_MESSAGE = -3;
 
-    private const int ERROR_INVALID_WINDOW_HANDLE = 1400;
     private const uint SYNCHRONIZE = 0x00100000;
 
     // Delay between attempts to post the wake-up message when the thread's message queue is full.
@@ -453,8 +452,9 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
             // More work than one wake-up's worth (items or time). Posted messages are retrieved before input, paint and timer messages, so
             // another wake-up message would starve those: when any is pending, continue from a timer instead (retrieved after
             // all of them), as WPF does for background work.
-            if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0 && YieldToPendingMessages())
+            if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0)
             {
+                YieldToPendingMessages();
                 return;
             }
 
@@ -463,7 +463,7 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
         }
     }
 
-    private bool YieldToPendingMessages()
+    private void YieldToPendingMessages()
     {
         // From now on posts don't post a wake-up message (the timer picks their work up), and one a post made during the drain
         // already posted is removed: it would be retrieved before the input it should yield to.
@@ -474,7 +474,7 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
 
         if (Functions.SetTimer(_hwnd, ContinueTimerId, 0, null) != 0)
         {
-            return true;
+            return;
         }
 
         // No timer available: post the wake-up message after all (_wakePending is already set, so Wake would skip it).
@@ -482,8 +482,6 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
         {
             _wakeRetry.Change(WakeRetryDelay, Timeout.InfiniteTimeSpan);
         }
-
-        return true;
     }
 
     private void Execute(WorkItem item)
