@@ -63,6 +63,45 @@ public class QueueRobustnessTests
         work.ThrowIfFailed();
     }
 
+    [Theory]
+    [InlineData("Enqueued")]
+    [InlineData("Waking")]
+    public async Task WorkThatRanIsNeverReportedAsRejectedAlsoWhenItClosedTheQueueWhilePosting(string stageName)
+    {
+        var stage = Enum.Parse<DirectNMessageQueue.PostStage>(stageName);
+        using var loop = new MessageLoopThread();
+        var queue = loop.Queue;
+        using var gate = new ManualResetEventSlim();
+        var draining = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        queue.Post(_ =>
+        {
+            draining.SetResult();
+            gate.Wait();
+        }, null);
+        await draining.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // The owner thread is draining its queue. Let it run the new item, which closes the queue (destroying its window),
+        // while the poster is still between queuing it and waking the thread.
+        queue.TestHook = reached =>
+        {
+            if (reached == stage)
+            {
+                gate.Set();
+                Assert.True(SpinWait.SpinUntil(() => queue.IsClosed, TimeSpan.FromSeconds(10)));
+            }
+        };
+        var ran = false;
+        var posted = queue.TryPost(_ =>
+        {
+            ran = true;
+            queue.Close();
+        }, null);
+        queue.TestHook = null;
+
+        Assert.True(ran);
+        Assert.True(posted, "TryPost reported work that ran as rejected.");
+    }
+
     [Fact]
     public async Task WorkDroppedByClosingIsCounted()
     {

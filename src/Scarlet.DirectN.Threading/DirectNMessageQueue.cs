@@ -210,16 +210,24 @@ public sealed unsafe partial class DirectNMessageQueue
             return false;
         }
 
-        _queue.Enqueue(new WorkItem(callback, state, ExecutionContext.Capture(), onAbandoned));
+        var item = new WorkItem(callback, state, ExecutionContext.Capture(), onAbandoned);
+        _queue.Enqueue(item);
+        TestHook?.Invoke(PostStage.Enqueued);
 
-        // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop it here.
+        // Closed concurrently (see _closed): the closing thread may already have drained the queue, so drop what is left here.
+        // The item may still have run first: the owner thread can take it while draining, before closing.
         if (Volatile.Read(ref _closed) != 0)
         {
             AbandonQueuedWork();
-            return false;
+            return !item.WasAbandoned();
         }
 
-        return Wake();
+        TestHook?.Invoke(PostStage.Waking);
+
+        // A failed wake-up means the queue was found closed or its thread gone, and everything still queued was dropped. The
+        // owner thread may have taken this item before that (and closed the queue itself, destroying the window the wake-up
+        // was posted to), so only report what really happened to it.
+        return Wake() || !item.WasAbandoned();
     }
 
     /// <summary>
@@ -269,6 +277,17 @@ public sealed unsafe partial class DirectNMessageQueue
     /// Gets the number of work items the queue dropped without running them, because it was closed (or its thread exited) first.
     /// </summary>
     public int DroppedCount => Volatile.Read(ref _dropped);
+
+    /// <summary>
+    /// Called by TryPost at <see cref="PostStage"/> points, so tests can establish interleavings with the owner thread.
+    /// </summary>
+    internal Action<PostStage>? TestHook { get; set; }
+
+    internal enum PostStage
+    {
+        Enqueued,
+        Waking,
+    }
 
     internal static InvalidOperationException QueueClosedException() =>
         new("The DirectN UI thread's queue is closed or its thread has exited; the work did not run.");
@@ -389,6 +408,7 @@ public sealed unsafe partial class DirectNMessageQueue
     {
         while (_queue.TryDequeue(out var item))
         {
+            item.MarkAbandoned();
             Interlocked.Increment(ref _dropped);
             item.Abandon();
         }
@@ -402,6 +422,7 @@ public sealed unsafe partial class DirectNMessageQueue
         var deadline = System.Diagnostics.Stopwatch.GetTimestamp() + MaxTicksPerWakeUp;
         while (processed < MaxItemsPerWakeUp && Volatile.Read(ref _closed) == 0 && _queue.TryDequeue(out var item))
         {
+            item.MarkRunning();
             processed++;
             Execute(item);
 
@@ -605,7 +626,30 @@ public sealed unsafe partial class DirectNMessageQueue
         /// </summary>
         public ExecutionContext? Context => context;
 
+        // What became of the item once taken from the queue (never changes after): run, or dropped without running.
+        private const int Queued = 0, Running = 1, Abandoned = 2;
+        private int _fate;
+
         public void Invoke() => callback(state);
+
+        public void MarkRunning() => Volatile.Write(ref _fate, Running);
+
+        public void MarkAbandoned() => Volatile.Write(ref _fate, Abandoned);
+
+        /// <summary>
+        /// Whether the item was dropped. Only called once the queue holds it no longer (it has been drained): whoever took it
+        /// marks it right away, so this waits at most for that.
+        /// </summary>
+        public bool WasAbandoned()
+        {
+            var spinner = default(SpinWait);
+            while (Volatile.Read(ref _fate) == Queued)
+            {
+                spinner.SpinOnce();
+            }
+
+            return Volatile.Read(ref _fate) == Abandoned;
+        }
 
         /// <summary>
         /// Dropped without running.
