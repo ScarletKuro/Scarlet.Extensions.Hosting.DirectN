@@ -511,15 +511,25 @@ public partial class TrayNotifyIconTests
 
             // Ends without ever processing the close request Dispose posts.
             disposed.Wait();
-        });
+        })
+        {
+            IsBackground = true,
+        };
         owner.Start();
-        Assert.True(created.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        Assert.SkipUnless(icon!.IsAdded, "No notification area (Explorer isn't running).");
+        try
+        {
+            Assert.True(created.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            Assert.SkipUnless(icon!.IsAdded, "No notification area (Explorer isn't running).");
 
-        icon.Dispose();
-        Assert.True(Functions.IsWindow(icon.WindowHandle), "The request was meant to be posted to a live window.");
-        disposed.Set();
-        owner.Join();
+            icon.Dispose();
+            Assert.True(Functions.IsWindow(icon.WindowHandle), "The request was meant to be posted to a live window.");
+        }
+        finally
+        {
+            // Also on a skip or a failure: never leave the owner thread waiting.
+            disposed.Set();
+            Assert.True(owner.Join(TimeSpan.FromSeconds(10)), "The owner thread didn't end.");
+        }
 
         Assert.True(WaitUntil(() => !icon.IsAdded), "The icon outlived its thread.");
         Assert.False(icon.IsInNotificationArea());
