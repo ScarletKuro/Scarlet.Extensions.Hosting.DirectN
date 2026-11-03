@@ -490,10 +490,55 @@ public partial class TrayNotifyIconTests
         owner.Join();
         Assert.SkipUnless(icon!.IsAdded, "No notification area (Explorer isn't running).");
 
+        // The thread's window may still exist for a moment, so the close request can even be posted; it is never processed.
         icon.Dispose();
 
-        Assert.False(icon.IsAdded);
+        Assert.True(WaitUntil(() => !icon.IsAdded), "The icon of an ended thread wasn't removed.");
         Assert.False(icon.IsInNotificationArea());
+    }
+
+    [Fact]
+    public void DisposedWhileItsThreadStillRunsButEndsWithoutProcessingMessagesTheIconIsStillRemoved()
+    {
+        using var image = TrayIconImage.FromStream(new MemoryStream(IcoTests.Ico.BuildReal(16)));
+        using var created = new ManualResetEventSlim();
+        using var disposed = new ManualResetEventSlim();
+        TrayNotifyIcon? icon = null;
+        var owner = new Thread(() =>
+        {
+            icon = new TrayNotifyIcon { Icon = image, Visible = true };
+            created.Set();
+
+            // Ends without ever processing the close request Dispose posts.
+            disposed.Wait();
+        });
+        owner.Start();
+        Assert.True(created.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.SkipUnless(icon!.IsAdded, "No notification area (Explorer isn't running).");
+
+        icon.Dispose();
+        Assert.True(Functions.IsWindow(icon.WindowHandle), "The request was meant to be posted to a live window.");
+        disposed.Set();
+        owner.Join();
+
+        Assert.True(WaitUntil(() => !icon.IsAdded), "The icon outlived its thread.");
+        Assert.False(icon.IsInNotificationArea());
+    }
+
+    private static bool WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                return false;
+            }
+
+            Thread.Sleep(10);
+        }
+
+        return true;
     }
 
     [Fact]

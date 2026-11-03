@@ -19,7 +19,7 @@ namespace Scarlet.Extensions.Hosting.DirectN.TrayIcon;
 /// <see cref="InvalidOperationException"/> on other threads, except <see cref="Dispose"/>. Exceptions thrown by event handlers
 /// are reported like any other exception on the UI thread (<c>IDirectNThread.UnhandledException</c>).
 /// </remarks>
-public sealed unsafe class TrayNotifyIcon : IDisposable
+public sealed unsafe partial class TrayNotifyIcon : IDisposable
 {
     // Unique per copy of this library in the process (e.g. two Native AOT DLLs), so each copy has its own window procedure.
     private static readonly string WindowClassName = "Scarlet.Extensions.Hosting.DirectN.TrayIcon.NotifyIcon." + Guid.NewGuid().ToString("N");
@@ -52,6 +52,12 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
 
     // Retries a cross-thread Dispose's close request while the owning thread's message queue is full.
     private Timer? _closeRetry;
+
+    // Signaled when the owning thread ends: a cross-thread Dispose then cleans up if the window was never destroyed normally
+    // (a window still exists for a moment after its thread exits, so a close request posted then is never processed).
+    private readonly OwnerThreadHandle? _ownerThread;
+    private RegisteredWaitHandle? _ownerExitWait;
+    private int _cleanedUp;
     private static readonly TimeSpan CloseRetryDelay = TimeSpan.FromMilliseconds(10);
 
     /// <summary>
@@ -70,6 +76,11 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         {
             _self.Free();
             throw;
+        }
+
+        if (OpenThread(SYNCHRONIZE, 0, Functions.GetCurrentThreadId()) is var thread and not 0)
+        {
+            _ownerThread = new OwnerThreadHandle(thread);
         }
     }
 
@@ -246,6 +257,16 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
             return;
         }
 
+        if (_ownerThread is not null)
+        {
+            _ownerExitWait = ThreadPool.RegisterWaitForSingleObject(
+                _ownerThread,
+                static (state, _) => ((TrayNotifyIcon)state!).CleanUp(),
+                this,
+                Timeout.Infinite,
+                executeOnlyOnce: true);
+        }
+
         if (!TryRequestClose())
         {
             // The owning thread's message queue is full: retry until it takes the request (or the thread is gone).
@@ -285,13 +306,8 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
             return false;
         }
 
-        // The owning thread has exited (taking the window with it): nothing else can use the icon any more.
-        RemoveFromNotificationArea();
-        if (_self.IsAllocated)
-        {
-            _self.Free();
-        }
-
+        // The owning thread has exited, taking the window with it (the owner-exit wait cleans up too, when there is one).
+        CleanUp();
         return true;
     }
 
@@ -468,6 +484,22 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
     {
         Interlocked.Exchange(ref _disposeStarted, 1);
         _disposed = true;
+        CleanUp();
+    }
+
+    /// <summary>
+    /// Removes the icon and releases what the icon holds, once: on the owning thread when its window is destroyed, or after a
+    /// cross-thread Dispose when that thread has ended without destroying it (then nothing else uses the icon any more).
+    /// </summary>
+    private void CleanUp()
+    {
+        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+        {
+            return;
+        }
+
+        _closeRetry?.Dispose();
+        _ownerExitWait?.Unregister(null);
         RemoveFromNotificationArea();
         if (_self.IsAllocated)
         {
@@ -665,6 +697,19 @@ public sealed unsafe class TrayNotifyIcon : IDisposable
         }
 
         return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
+    }
+
+    private const uint SYNCHRONIZE = 0x00100000;
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial nint OpenThread(uint desiredAccess, int inheritHandle, uint threadId);
+
+    private sealed class OwnerThreadHandle : WaitHandle
+    {
+        public OwnerThreadHandle(nint handle)
+        {
+            SafeWaitHandle = new Microsoft.Win32.SafeHandles.SafeWaitHandle(handle, ownsHandle: true);
+        }
     }
 
     private static void ReportException(Exception exception)

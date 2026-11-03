@@ -60,6 +60,21 @@ internal static unsafe partial class NativeMethods
     [LibraryImport("user32.dll", SetLastError = true)]
     public static partial nint CreateIconFromResourceEx(byte* presbits, uint dwResSize, int fIcon, uint dwVer, int cxDesired, int cyDesired, uint flags);
 
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial int LookupIconIdFromDirectoryEx(byte* presbits, int fIcon, int cxDesired, int cyDesired, uint flags);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint FindResourceW(nint module, nint name, nint type);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial nint LoadResource(nint module, nint resource);
+
+    [LibraryImport("kernel32.dll")]
+    public static partial nint LockResource(nint resourceData);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    public static partial uint SizeofResource(nint module, nint resource);
+
     public const uint MSGFLT_ALLOW = 1;
 
     [LibraryImport("user32.dll")]

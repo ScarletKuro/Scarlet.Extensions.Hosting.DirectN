@@ -135,6 +135,47 @@ public class IcoTests
     }
 
     [Fact]
+    public async Task FromApplicationIconWorksWhenTheExecutablesPathIsAboutMaxPathLong()
+    {
+        // LoadImage fails, without an error, for an executable whose path is about MAX_PATH long. The Native AOT test executable
+        // is self-contained: run this class's application icon test from a copy at such a path.
+        Assert.SkipWhen(System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported, "Needs the self-contained Native AOT test executable.");
+        var executable = Environment.ProcessPath!;
+        var name = Path.GetFileName(executable);
+        var root = Path.Combine(Path.GetTempPath(), "scarlet-" + Guid.NewGuid().ToString("N")[..8]);
+        var padding = 258 - (root.Length + 2 + name.Length);
+        Assert.InRange(padding, 1, 255);
+        var directory = Path.Combine(root, new string('p', padding));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var copy = Path.Combine(directory, name);
+            File.Copy(executable, copy);
+            Assert.Equal(258, copy.Length);
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo(copy)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-method");
+            startInfo.ArgumentList.Add($"*{nameof(FromApplicationIconUsesTheExecutablesIconResource)}");
+            using var process = System.Diagnostics.Process.Start(startInfo)!;
+            var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var output = process.StandardOutput.ReadToEnd();
+            Assert.True(process.WaitForExit(TimeSpan.FromSeconds(60)), "The copy didn't exit.");
+
+            Assert.True(process.ExitCode == 0 && output.Contains("Failed: 0", StringComparison.Ordinal), output + await error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public unsafe void FromHandleUsesTheHandleAtEverySizeAndOwnsItWhenAsked()
     {
         var ico = Ico.BuildReal(16);

@@ -40,14 +40,44 @@ public sealed unsafe class TrayIconImage : IDisposable
     /// </summary>
     /// <param name="resourceId">The resource id.</param>
     /// <returns>The image.</returns>
-    public static TrayIconImage FromResource(int resourceId) => new(size =>
-        Functions.LoadImageW(
-            new HINSTANCE(Functions.GetModuleHandleW(default).Value),
-            new PWSTR { Value = resourceId },
-            GDI_IMAGE_TYPE.IMAGE_ICON,
-            size,
-            size,
-            0).Value);
+    public static TrayIconImage FromResource(int resourceId) => new(size => LoadIconResource(resourceId, size));
+
+    /// <summary>
+    /// Reads the icon group from the executable's resources and creates the image best suited for <paramref name="size"/>, the
+    /// way LoadImage does. Not LoadImage itself: it fails (returning no error) when the executable's path is about MAX_PATH long.
+    /// </summary>
+    private static nint LoadIconResource(int resourceId, int size)
+    {
+        const int RT_ICON = 3, RT_GROUP_ICON = 14;
+        var module = Functions.GetModuleHandleW(default).Value;
+        if (!TryGetResource(module, resourceId, RT_GROUP_ICON, out var group, out var groupSize))
+        {
+            return 0;
+        }
+
+        var iconId = NativeMethods.LookupIconIdFromDirectoryEx(group, 1, size, size, 0);
+        if (iconId == 0 || !TryGetResource(module, iconId, RT_ICON, out var icon, out var iconSize))
+        {
+            return 0;
+        }
+
+        return NativeMethods.CreateIconFromResourceEx(icon, iconSize, 1, 0x00030000, size, size, 0);
+    }
+
+    private static bool TryGetResource(nint module, int id, int type, out byte* data, out uint size)
+    {
+        data = null;
+        size = 0;
+        var resource = NativeMethods.FindResourceW(module, id, type);
+        if (resource == 0)
+        {
+            return false;
+        }
+
+        size = NativeMethods.SizeofResource(module, resource);
+        data = (byte*)NativeMethods.LockResource(NativeMethods.LoadResource(module, resource));
+        return data is not null && size > 0;
+    }
 
     /// <summary>
     /// An .ico file.
