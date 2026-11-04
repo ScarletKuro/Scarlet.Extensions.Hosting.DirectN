@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - `DirectNDispatcher` with `InvokeAsync` overloads for actions, results and asynchronous callbacks, cancellation before execution, and `VerifyAccess`. `DirectNMessageQueue` inherits this API; `IDirectNThread.Dispatcher` and a registered `DirectNDispatcher` expose it through the host, including startup buffering and failure notification.
 
 ### Fixed
+- Release owner-thread resources even when window loss already closed the queue. Abandon pending work immediately on native window destruction, roll back failed queue construction, and guard the entire native callback boundary.
 - Require a native owner-thread handle when creating a queue, failing explicitly if it cannot be opened. Every successful queue creation now establishes owner-exit monitoring; `Send` no longer needs fallback polling.
 - Observe owner-thread exit without requiring another post, so accepted invocations are faulted if their queue is abandoned without `Close()`.
 

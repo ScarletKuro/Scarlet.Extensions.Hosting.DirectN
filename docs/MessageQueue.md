@@ -79,6 +79,8 @@ Shutdown rejection returns `false`; it must not throw from the enqueue implement
 - The queue has no capacity limit: don't flood the UI thread with unbounded work.
 - Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread
   exits without it is still released by the garbage collector.
+- Native window destruction immediately rejects and abandons queued work. `Close()` still releases owner-thread resources
+  after that logical closure. Failed construction rolls back the resources it acquired, allowing creation to be retried.
 - Queue creation requires a native owner-thread handle to observe unexpected exit. If acquiring it fails, creation throws
   `Win32Exception`, rather than accepting work whose completion could no longer be guaranteed before execution.
 
@@ -95,3 +97,5 @@ Shutdown rejection returns `false`; it must not throw from the enqueue implement
 | `RethrowAsUnhandled(exception)` | Surfaces an exception as unhandled without crossing a native callback boundary. |
 
 See the [wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/9.-Message-queue-%F0%9F%93%AC) for details.
+See [reliability validation](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/docs/ThreadingReliability.md)
+for the hardening scope and remaining production workload qualification.
