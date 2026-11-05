@@ -219,7 +219,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
             return true;
         }
 
-        if (!queue.TryPostAbandonable(callback, state, onAbandoned))
+        if (!queue.TryPost(callback, state, onAbandoned))
         {
             LogPostDropped();
             return false;
@@ -832,7 +832,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
         foreach (var post in pendingPosts)
         {
             // In the poster's ExecutionContext, captured when it posted, not the UI thread's at flush time.
-            var posted = queue.TryPostAbandonable(static s => ((PendingPost)s!).RunInCapturedContext(), post,
+            var posted = queue.TryPost(static s => ((PendingPost)s!).RunInCapturedContext(), post,
                 static s => ((PendingPost)s!).Abandon());
             if (!posted)
             {

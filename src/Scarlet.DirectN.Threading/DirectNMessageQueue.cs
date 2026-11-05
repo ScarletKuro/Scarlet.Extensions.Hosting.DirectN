@@ -223,17 +223,22 @@ public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
     /// <see langword="false"/> when the work can never run: the queue was closed or its thread has exited. Work accepted
     /// while the queue is being closed may still be dropped by the closing.
     /// </returns>
-    public bool TryPost(SendOrPostCallback callback, object? state) => TryPostAbandonable(callback, state, onAbandoned: null);
+    public bool TryPost(SendOrPostCallback callback, object? state) => TryPost(callback, state, onAbandoned: null);
 
     /// <inheritdoc />
     protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned) =>
-        TryPostAbandonable(callback, state, onAbandoned);
+        TryPost(callback, state, onAbandoned);
 
     /// <summary>
-    /// Queues <paramref name="callback"/>, with what to do if it is dropped without running (closing the queue, or the owner
-    /// thread exiting): a cross-thread Send uses it to release its caller.
+    /// Queues <paramref name="callback"/>, with what to do if it is dropped without running: the queue is closed or its owner
+    /// thread exits before it runs. Exactly one of <paramref name="callback"/> and <paramref name="onAbandoned"/> is called for
+    /// accepted work; <paramref name="onAbandoned"/> may also be called when this returns <see langword="false"/>.
     /// </summary>
-    internal bool TryPostAbandonable(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned)
+    /// <param name="callback">The work to run.</param>
+    /// <param name="state">The state passed to <paramref name="callback"/> and <paramref name="onAbandoned"/>.</param>
+    /// <param name="onAbandoned">Called with <paramref name="state"/> if the work is dropped without running; may be <see langword="null"/>.</param>
+    /// <returns><see langword="false"/> when the work can never run: the queue was closed or its thread has exited.</returns>
+    public bool TryPost(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned)
     {
         ArgumentNullException.ThrowIfNull(callback);
 

@@ -61,7 +61,7 @@ public sealed class DirectNSynchronizationContext : SynchronizationContext
         }
 
         var work = new SendWork(d, state);
-        if (!Queue.TryPostAbandonable(static s => ((SendWork)s!).Run(), work, static s => ((SendWork)s!).Abandon()))
+        if (!Queue.TryPost(static s => ((SendWork)s!).Run(), work, static s => ((SendWork)s!).Abandon()))
         {
             throw DirectNMessageQueue.QueueClosedException();
         }

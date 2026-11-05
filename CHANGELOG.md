@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Added
 - `DirectNDispatcher.Post(Action)` and `TryPost(Action)` for fire-and-forget UI work, available through the queue and host dispatcher. Document the subclass enqueue contract, including execution context, rejection and abandonment guarantees.
 - `DirectNDispatcher` with `InvokeAsync` overloads for actions, results and asynchronous callbacks, cancellation before execution, and `VerifyAccess`. `DirectNMessageQueue` inherits this API; `IDirectNThread.Dispatcher` and a registered `DirectNDispatcher` expose it through the host, including startup buffering and failure notification.
+- `DirectNMessageQueue.TryPost(callback, state, onAbandoned)`: queue work with a callback for when it is dropped without running (the queue closes or its owner thread exits first). Exactly one of the two runs for accepted work.
+
+### Changed
+- **Breaking for custom implementations:** `IDirectNThread` gains a `Dispatcher` property. Code consuming the interface is unaffected; classes implementing it must add the member.
 
 ### Fixed
 - Release owner-thread resources even when window loss already closed the queue. Abandon pending work immediately on native window destruction, roll back failed queue construction, and guard the entire native callback boundary.

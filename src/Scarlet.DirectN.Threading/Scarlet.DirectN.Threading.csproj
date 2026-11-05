@@ -9,7 +9,6 @@
 
   <ItemGroup>
     <PackageReference Include="DirectNAot" />
-    <InternalsVisibleTo Include="Scarlet.Extensions.Hosting.DirectN" />
   </ItemGroup>
 
   <ItemGroup>

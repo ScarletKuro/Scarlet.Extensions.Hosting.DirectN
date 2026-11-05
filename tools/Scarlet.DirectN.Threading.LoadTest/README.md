@@ -2,11 +2,10 @@
 
 A standalone, headless Win32 message loop using the production dispatcher. It offers callbacks at a configurable total
 rate from independent asynchronous producers. `post` uses `TryPost(Action)`; `invoke` uses `InvokeAsync(Action)` and
-observes every returned task. It does not require the Generic Host, a TCP endpoint, Orleans, or a backend connection.
+observes every returned task. It does not require the Generic Host.
 
-The initial target is a cash-register fleet using older Pentium N3530-class processors, 8 GB RAM, Windows 10/11, and
-multi-day application sessions. Rates below are exploratory test points, not estimates of the application's traffic.
-No results on the development machine establish performance on that fleet.
+Rates below are exploratory test points, not estimates of any application's traffic. Results on a development machine
+don't predict other hardware: run it on the machines you deploy to.
 
 ## Build a standalone executable
 
@@ -16,7 +15,7 @@ From the repository root:
 dotnet publish tools/Scarlet.DirectN.Threading.LoadTest -c Release -r win-x64 -p:PublishAot=true -o artifacts/load-test-bin
 ```
 
-Copy the published directory to a representative test till. This command produces a 64-bit executable; confirm the
+Copy the published directory to a representative target machine. This command produces a 64-bit executable; confirm the
 Windows installation is 64-bit. A 32-bit Windows installation requires a separately built and validated `win-x86` target.
 Record the machine model, exact Windows edition/build, power profile and competing application load with each report.
 
@@ -70,18 +69,10 @@ Instrumentation, runtime startup, producers and monitoring all contribute to the
 increase is not proof of a leak: examine the long-term trend across GC cycles and runtime warmup. The sampling buffers
 and retained outstanding invocation tasks are bounded; records are not retained for every callback in a multi-day run.
 
-## Application qualification
-
-Use the current WPF application as the functional and responsiveness baseline. Replay the same TCP requests, Orleans
-stream/subscription activity and background jobs against both applications, including requests while coupon/payment
-dialogs are open, disconnect/reconnect cycles and host shutdown. Keep backend latency separate from UI scheduling latency.
-
-Treat business UI requests as commands that need explicit completion/failure handling, normally through `InvokeAsync`.
-Keep TCP/Orleans I/O and CPU-heavy processing outside UI callbacks. Apply bounded admission upstream and define how busy
-requests are handled. Coalescing is appropriate for replaceable status displays; do not silently coalesce distinct business
-commands. Application policy must decide whether multiple dialog-opening requests may overlap during modal reentrancy.
+## Limits
 
 This harness exercises synchronous callbacks only. It does not validate real rendering, modal dialogs, COM interactions,
-asynchronous dialog lifetimes, Orleans delivery semantics, network faults, or thread-pool starvation. Those remain separate
-integration tests in the application. See [the reliability plan](../../docs/ThreadingReliability.md).
-The native harness build also does not establish Native AOT compatibility of Orleans or the application's other dependencies.
+asynchronous callback lifetimes or thread-pool starvation; test those in your application, with its real workload.
+
+The queue is unbounded: an application producing UI work faster than the UI thread processes it must coalesce updates
+(e.g. replaceable status displays) or apply backpressure upstream. Keep I/O and CPU-heavy processing outside UI callbacks.

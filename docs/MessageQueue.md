@@ -88,7 +88,7 @@ Shutdown rejection returns `false`; it must not throw from the enqueue implement
 |---|---|
 | `DirectNMessageQueue.GetOrCreateForCurrentThread()` | The queue of the calling thread, created on first use. |
 | `DirectNMessageQueue.Current` | The queue of the calling thread, or `null`. |
-| `Post` / `TryPost` | Queue work for the UI thread. |
+| `Post` / `TryPost` | Queue work for the UI thread. `TryPost(callback, state, onAbandoned)` also reports work dropped without running. |
 | `InvokeAsync` | Await an action, result, or asynchronous callback on the UI thread. |
 | `Close()` | Owner thread only: drops queued work, rejects later posts, releases the window and native handle. |
 | `CheckAccess()`, `VerifyAccess()`, `Thread`, `ManagedThreadId` | Test or enforce access to the owning thread. |
@@ -97,5 +97,3 @@ Shutdown rejection returns `false`; it must not throw from the enqueue implement
 | `RethrowAsUnhandled(exception)` | Surfaces an exception as unhandled without crossing a native callback boundary. |
 
 See the [wiki](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/wiki/9.-Message-queue-%F0%9F%93%AC) for details.
-See [reliability validation](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/blob/main/docs/ThreadingReliability.md)
-for the hardening scope and remaining production workload qualification.
