@@ -42,6 +42,28 @@ public class RegistrationTests
     }
 
     [Fact]
+    public void AnApplicationRegisteredDispatcherIsKept()
+    {
+        var fake = new InlineDispatcher();
+        var services = new ServiceCollection();
+        services.AddSingleton<global::Scarlet.DirectN.Threading.DirectNDispatcher>(fake);
+        using var provider = services.AddDirectN().BuildServiceProvider();
+
+        Assert.Same(fake, provider.GetRequiredService<global::Scarlet.DirectN.Threading.DirectNDispatcher>());
+    }
+
+    private sealed class InlineDispatcher : global::Scarlet.DirectN.Threading.DirectNDispatcher
+    {
+        public override bool CheckAccess() => true;
+
+        protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned)
+        {
+            callback(state);
+            return true;
+        }
+    }
+
+    [Fact]
     public void ComponentsAreRegisteredAsFactoriesInOrderAndNeverResolvedByTheContainer()
     {
         var services = new ServiceCollection();
