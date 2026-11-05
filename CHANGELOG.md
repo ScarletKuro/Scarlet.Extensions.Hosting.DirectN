@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-05
+
 ### Added
 - `DirectNDispatcher.Post(Action)` and `TryPost(Action)` for fire-and-forget UI work, available through the queue and host dispatcher. Document the subclass enqueue contract, including execution context, rejection and abandonment guarantees.
 - `DirectNDispatcher` with `InvokeAsync` overloads for actions, results and asynchronous callbacks, cancellation before execution, and `VerifyAccess`. `DirectNMessageQueue` inherits this API; `IDirectNThread.Dispatcher` and a registered `DirectNDispatcher` expose it through the host, including startup buffering and failure notification.
@@ -29,5 +31,6 @@ First release: Microsoft.Extensions.Hosting for DirectN (Win32 / Direct2D) appli
 - `Scarlet.Extensions.Hosting.DirectN.TrayIcon`: `TrayNotifyIcon` (WinForms `NotifyIcon` behavior, native Win32 menu), `TrayMenu` / `TrayMenuItem`, `TrayIconImage`, `ApplicationInfo`, `AddDirectNTrayIcon`.
 - `Scarlet.DirectN.Threading`: `DirectNMessageQueue` / `DirectNSynchronizationContext`, the UI-thread queue under the host. Work is delivered inside modal loops, runs in the caller's `ExecutionContext`, can't starve input, paint and timers, posting through the context never throws, and `Send` always returns.
 
-[Unreleased]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/compare/1.1.0...HEAD
+[1.1.0]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/compare/1.0.0...1.1.0
 [1.0.0]: https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN/releases/tag/1.0.0
