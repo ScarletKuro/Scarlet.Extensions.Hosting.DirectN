@@ -88,6 +88,7 @@ jobs:
           if ($LASTEXITCODE -ne 2) { exit 1 }
           $overload = Get-Content artifacts/aot/load-test/overload.json -Raw | ConvertFrom-Json
           if (!$overload.BacklogLimitReached -or $overload.Accepted -ne $overload.Completed -or $overload.PeakPending -gt 128) { exit 1 }
+          exit 0
 
       - name: Preserve native load-test failure artifacts
         if: failure()
