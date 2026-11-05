@@ -11,8 +11,50 @@ SynchronizationContext.SetSynchronizationContext(queue.SynchronizationContext);
 queue.UnhandledException += (_, e) => { Log(e.Exception); e.Handled = true; };
 
 // From any thread:
-queue.Post(_ => window.Text = "Updated", null);
+queue.Post(() => window.Text = "Updated");
+bool accepted = queue.TryPost(() => window.Text = "Updated again");
+
+// Await completion, observe failures, or return a value:
+await queue.InvokeAsync(() => { window.Text = "Updated"; }, cancellationToken);
+var title = await queue.InvokeAsync(() => window.Text, cancellationToken);
 ```
+
+`DirectNMessageQueue` inherits `DirectNDispatcher`, which provides fire-and-forget posting and four awaitable overloads:
+
+```csharp
+void Post(Action callback);
+bool TryPost(Action callback);
+Task InvokeAsync(Action callback, CancellationToken cancellationToken = default);
+Task<T> InvokeAsync<T>(Func<T> callback, CancellationToken cancellationToken = default);
+Task InvokeAsync(Func<Task> callback, CancellationToken cancellationToken = default);
+Task<T> InvokeAsync<T>(Func<Task<T>> callback, CancellationToken cancellationToken = default);
+```
+
+`Post` and `TryPost` always enqueue, including on the UI thread. `Post` throws `InvalidOperationException` if the work is
+rejected; `TryPost` returns `false`. Accepted posts may still be dropped during shutdown. Exceptions thrown by posted
+callbacks use the queue's `UnhandledException` event. Use `InvokeAsync` for asynchronous callbacks or to observe completion
+and exceptions. The queue also retains its `SendOrPostCallback` and state overloads for lower-level integrations.
+
+Invocations always enqueue, including on the UI thread. The async overloads wait for the full callback, with UI context
+capture working across its awaits unless it uses `ConfigureAwait(false)`. Callback exceptions fault the returned task
+instead of raising `UnhandledException`; callback cancellation produces a canceled task. Task continuations run
+asynchronously. Cancellation prevents a queued callback from starting; once it starts, it controls its own cancellation.
+Queued callbacks still occupy their queue entries until drained, even after cancellation.
+
+Rejection, closing the queue, or owner-thread exit faults invocations that have not started with `InvalidOperationException`.
+A running async callback is responsible for completing: keep the UI loop alive while it needs UI continuations. Neither
+shutdown nor the invocation's cancellation token interrupts a running callback. Never use `.Wait()` or `.Result` on the
+UI thread to wait for an invocation. `CheckAccess()` tests thread ownership; `VerifyAccess()` throws outside the UI thread.
+
+Under the Generic Host, inject `DirectNDispatcher` or use `IDirectNThread.Dispatcher`. It buffers calls before UI startup,
+faults buffered calls on failed startup or disposal, and uses the queue once available. Do not await an invocation in a
+hosted service's `StartAsync`: the UI starts after every `StartAsync` returns. Use a background service or
+`IHostApplicationLifetime.ApplicationStarted`. Work buffered before the queue exists waits until application startup;
+work posted once the queue exists may run earlier, including during startup modal loops.
+
+Custom `DirectNDispatcher` subclasses must implement the documented `TryEnqueue` contract: enqueue safely from any thread,
+preserve execution context, install the UI synchronization context, and notify accepted work of execution or abandonment.
+Shutdown rejection returns `false`; it must not throw from the enqueue implementation.
 
 - Work is kept in memory and a single wake-up message is posted to a message-only window of the UI thread. Window messages are
   dispatched by every message loop, **including modal ones** (menus, message boxes, task dialogs, window move/resize), so queued
@@ -24,7 +66,7 @@ queue.Post(_ => window.Text = "Updated", null);
   (`AsyncLocal` values, culture), and what it changes there doesn't leak into later items. Work posted with flow suppressed
   runs in the UI thread's own baseline context.
 - `DirectNSynchronizationContext.Send` runs inline on the UI thread and otherwise blocks until the UI thread ran the work.
-- Exceptions from queued work raise `UnhandledException`; unless `Handled` is set they are rethrown on the thread pool and
+- Exceptions from `Post` callbacks raise `UnhandledException`; unless `Handled` is set they are rethrown on the thread pool and
   terminate the process, like WinForms and WPF.
 - `TryPost` returns `false` (and `Post` throws `InvalidOperationException`) only when the work can never run: the queue is
   closed or its thread has exited (`IsClosed`). A full thread message queue is retried, not reported.
@@ -37,14 +79,19 @@ queue.Post(_ => window.Text = "Updated", null);
 - The queue has no capacity limit: don't flood the UI thread with unbounded work.
 - Call `Close()` on the owning thread when its message loop has ended for good (the host does this). A queue whose thread
   exits without it is still released by the garbage collector.
+- Native window destruction immediately rejects and abandons queued work. `Close()` still releases owner-thread resources
+  after that logical closure. Failed construction rolls back the resources it acquired, allowing creation to be retried.
+- Queue creation requires a native owner-thread handle to observe unexpected exit. If acquiring it fails, creation throws
+  `Win32Exception`, rather than accepting work whose completion could no longer be guaranteed before execution.
 
 | Member | |
 |---|---|
 | `DirectNMessageQueue.GetOrCreateForCurrentThread()` | The queue of the calling thread, created on first use. |
 | `DirectNMessageQueue.Current` | The queue of the calling thread, or `null`. |
-| `Post` / `TryPost` | Queue work for the UI thread. |
+| `Post` / `TryPost` | Queue work for the UI thread. `TryPost(callback, state, onAbandoned)` also reports work dropped without running. |
+| `InvokeAsync` | Await an action, result, or asynchronous callback on the UI thread. |
 | `Close()` | Owner thread only: drops queued work, rejects later posts, releases the window and native handle. |
-| `CheckAccess()`, `Thread`, `ManagedThreadId` | The owning thread. |
+| `CheckAccess()`, `VerifyAccess()`, `Thread`, `ManagedThreadId` | Test or enforce access to the owning thread. |
 | `SynchronizationContext` | The `DirectNSynchronizationContext` posting to this queue. |
 | `UnhandledException` | Exceptions from queued work. |
 | `RethrowAsUnhandled(exception)` | Surfaces an exception as unhandled without crossing a native callback boundary. |

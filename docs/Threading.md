@@ -2,6 +2,19 @@
 
 `JoinableTaskFactory`-based thread switching for [Scarlet.Extensions.Hosting.DirectN](https://github.com/ScarletKuro/Scarlet.Extensions.Hosting.DirectN).
 
+For an awaitable UI operation, the main hosting package also registers `Scarlet.DirectN.Threading.DirectNDispatcher`:
+
+```csharp
+dispatcher.Post(() => window.Text = "Updated");
+await dispatcher.InvokeAsync(() => { window.Text = "Updated"; }, cancellationToken);
+var title = await dispatcher.InvokeAsync(() => window.Text, cancellationToken);
+```
+
+This needs only `AddDirectN()`. `Post` schedules without completion tracking; `TryPost` reports whether posting was accepted.
+`InvokeAsync` also supports `Func<Task>` and `Func<Task<T>>`, awaiting the full callback. Use
+`JoinableTaskFactory` when you need to switch the current method to the UI thread or coordinate synchronous waits.
+See [Message Queue](MessageQueue.md) for invocation cancellation, shutdown, and startup behavior.
+
 ```csharp
 builder.Services.AddDirectN();
 builder.Services.AddThreadSwitching();

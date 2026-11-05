@@ -75,6 +75,30 @@ jobs:
       - name: Publish ScenarioApp (Native AOT)
         run: dotnet publish tests/Scarlet.Extensions.Hosting.DirectN.ScenarioApp -c Release -r win-x64 -o artifacts/aot/scenario -p:TreatWarningsAsErrors=true
 
+      - name: Smoke-test load harness (Native AOT)
+        shell: pwsh
+        run: |
+          dotnet publish tools/Scarlet.DirectN.Threading.LoadTest -c Release -r win-x64 -o artifacts/aot/load-test -p:PublishAot=true -p:TreatWarningsAsErrors=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($mode in 'post', 'invoke') {
+            & artifacts/aot/load-test/Scarlet.DirectN.Threading.LoadTest.exe --seconds 2 --rate 100 --producers 2 --mode $mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & artifacts/aot/load-test/Scarlet.DirectN.Threading.LoadTest.exe --seconds 2 --rate 10000 --producers 4 --callback-us 1000 --max-pending 128 --mode invoke --output artifacts/aot/load-test/overload.json
+          if ($LASTEXITCODE -ne 2) { exit 1 }
+          $overload = Get-Content artifacts/aot/load-test/overload.json -Raw | ConvertFrom-Json
+          if (!$overload.BacklogLimitReached -or $overload.Accepted -ne $overload.Completed -or $overload.PeakPending -gt 128) { exit 1 }
+          exit 0
+
+      - name: Preserve native load-test failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-load-test-failure
+          path: artifacts/aot/load-test/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Test scenarios on Native AOT
         shell: pwsh
         run: |

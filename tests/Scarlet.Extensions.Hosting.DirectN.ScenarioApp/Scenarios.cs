@@ -19,6 +19,11 @@ internal static unsafe partial class Scenarios
     {
         switch (scenario)
         {
+            case "invoke-async":
+            case "invoke-async-failure":
+                InvokeAsyncScenario.Configure(services, scenario == "invoke-async-failure");
+                return true;
+
             case "stop":
                 AddDirectN(services, ShutdownMode.OnExplicitShutdown);
                 services.AddDirectNComponent<ProbeComponent>();

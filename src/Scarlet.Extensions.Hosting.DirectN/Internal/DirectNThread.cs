@@ -83,6 +83,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
         _logger = serviceProvider.GetService<ILogger<DirectNThread>>() ?? NullLogger<DirectNThread>.Instance;
         _stopTimeout = serviceProvider.GetService<IOptions<HostOptions>>()?.Value.ShutdownTimeout ?? TimeSpan.FromSeconds(DefaultStopTimeoutSeconds);
         _synchronizationContext = new HostSynchronizationContext(this);
+        Dispatcher = new HostDispatcher(this);
 
         MainThread = new Thread(UiThreadStart)
         {
@@ -99,6 +100,8 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
     public SynchronizationContext SynchronizationContext => _synchronizationContext;
 
     public IDirectNContext Context => _context;
+
+    public DirectNDispatcher Dispatcher { get; }
 
     /// <summary>
     /// Completes once the application and its components are initialized and the message loop runs.
@@ -182,7 +185,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
     /// Never throws: JoinableTaskFactory terminates the process (Environment.FailFast) when posting to the UI thread throws.
     /// </summary>
     /// <returns><see langword="false"/> when the work was dropped because the UI thread has ended (or never started).</returns>
-    internal bool Post(SendOrPostCallback callback, object? state)
+    internal bool Post(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned = null)
     {
         DirectNMessageQueue? queue = null;
         var firstQueued = false;
@@ -198,7 +201,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
                 }
 
                 firstQueued = pendingPosts.Count == 0;
-                pendingPosts.Add(new PendingPost(callback, state, ExecutionContext.Capture()));
+                pendingPosts.Add(new PendingPost(callback, state, ExecutionContext.Capture(), onAbandoned));
             }
             else
             {
@@ -216,7 +219,7 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
             return true;
         }
 
-        if (!queue.TryPost(callback, state))
+        if (!queue.TryPost(callback, state, onAbandoned))
         {
             LogPostDropped();
             return false;
@@ -350,18 +353,24 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
     }
 
     /// <summary>
-    /// Work posted before the UI thread existed that can no longer run. Whoever awaited it (e.g.
-    /// JoinableTaskFactory.SwitchToMainThreadAsync) keeps waiting, which is still better than a process terminated without a trace.
+    /// Drops work buffered before startup and faults awaitable dispatcher invocations. Plain context posts have no
+    /// abandonment notification, so their callers (e.g. JoinableTaskFactory.SwitchToMainThreadAsync) may keep waiting.
     /// </summary>
     private void DropPendingPosts()
     {
-        int count;
+        List<PendingPost>? pendingPosts;
         lock (_stateLock)
         {
-            count = _pendingPosts?.Count ?? 0;
+            pendingPosts = _pendingPosts;
             _pendingPosts = null;
         }
 
+        foreach (var post in pendingPosts ?? [])
+        {
+            post.Abandon();
+        }
+
+        var count = pendingPosts?.Count ?? 0;
         if (count > 0)
         {
             _logger.DirectNQueuedPostsDropped(count);
@@ -823,31 +832,34 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
         foreach (var post in pendingPosts)
         {
             // In the poster's ExecutionContext, captured when it posted, not the UI thread's at flush time.
-            var posted = post.Context is null
-                ? queue.TryPost(post.Callback, post.State)
-                : queue.TryPost(static s => ((PendingPost)s!).RunInCapturedContext(), post);
+            var posted = queue.TryPost(static s => ((PendingPost)s!).RunInCapturedContext(), post,
+                static s => ((PendingPost)s!).Abandon());
             if (!posted)
             {
+                post.Abandon();
                 LogPostDropped();
             }
         }
     }
 
-    private sealed class PendingPost(SendOrPostCallback callback, object? state, ExecutionContext? context)
+    private sealed class PendingPost(SendOrPostCallback callback, object? state, ExecutionContext? context, Action<object?>? onAbandoned)
     {
-        public SendOrPostCallback Callback => callback;
-
-        public object? State => state;
-
-        public ExecutionContext? Context => context;
-
         /// <summary>
-        /// Runs the callback in the poster's ExecutionContext. Only used when one was captured (flow wasn't suppressed).
+        /// Runs in the poster's captured ExecutionContext, or the queue's baseline context when flow was suppressed.
         /// </summary>
         public void RunInCapturedContext()
         {
-            ExecutionContext.Run(context!, static state => ((PendingPost)state!).Invoke(), this);
+            if (context is null)
+            {
+                Invoke();
+            }
+            else
+            {
+                ExecutionContext.Run(context, static state => ((PendingPost)state!).Invoke(), this);
+            }
         }
+
+        public void Abandon() => onAbandoned?.Invoke(state);
 
         private void Invoke() => callback(state);
     }
@@ -871,6 +883,17 @@ internal sealed unsafe partial class DirectNThread : IDirectNThread, IDisposable
             // The queue rethrows it next, which terminates the process: leave a trace first.
             _logger.DirectNUnhandledException(e.Exception);
         }
+    }
+
+    /// <summary>
+    /// Awaitable dispatch through the same startup buffer as the host's synchronization context.
+    /// </summary>
+    private sealed class HostDispatcher(DirectNThread thread) : DirectNDispatcher
+    {
+        public override bool CheckAccess() => Thread.CurrentThread == thread.MainThread;
+
+        protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned) =>
+            thread.Post(callback, state, onAbandoned);
     }
 
     /// <summary>

@@ -23,13 +23,13 @@ namespace Scarlet.DirectN.Threading;
 /// (the host, other libraries, the app) shares the same ordering, exception path and <see cref="SynchronizationContext"/>.
 /// </para>
 /// <para>
-/// Guarantees: <see cref="TryPost"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
+/// Guarantees: <see cref="TryPost(SendOrPostCallback, object)"/> returns <see langword="false"/> only when the work can never run (the queue was closed or
 /// its thread has exited); transient failures such as a full thread message queue are retried. A cross-thread
 /// <see cref="DirectNSynchronizationContext.Send"/> returns once the work ran (while the thread processes messages), or throws
 /// <see cref="InvalidOperationException"/> because the queue was closed or its thread exited first.
 /// </para>
 /// </remarks>
-public sealed unsafe partial class DirectNMessageQueue
+public sealed unsafe partial class DirectNMessageQueue : DirectNDispatcher
 {
     private const string WakeMessageName = "Scarlet.DirectN.Threading.DirectNMessageQueue";
 
@@ -45,12 +45,12 @@ public sealed unsafe partial class DirectNMessageQueue
     // The timer that continues a backlog once pending input, paint and timer messages have had their turn.
     private const nuint ContinueTimerId = 1;
     private const uint WM_TIMER = 0x0113;
+    private const uint WM_NCDESTROY = 0x0082;
     private const uint QS_INPUT_PAINT_TIMER = 0x0407 | 0x0020 | 0x0010;
 
     // Parent handle that makes CreateWindowEx create a message-only window.
     private const nint HWND_MESSAGE = -3;
 
-    private const int ERROR_INVALID_WINDOW_HANDLE = 1400;
     private const uint SYNCHRONIZE = 0x00100000;
 
     // Delay between attempts to post the wake-up message when the thread's message queue is full.
@@ -70,7 +70,8 @@ public sealed unsafe partial class DirectNMessageQueue
     // suppressed runs in it, so that work is isolated from other callbacks too.
     private ExecutionContext? _baselineContext;
     private readonly HWND _hwnd;
-    private readonly OwnerThreadExitHandle? _ownerExit;
+    private readonly OwnerThreadExitHandle _ownerExit;
+    private readonly RegisteredWaitHandle _ownerExitRegistration;
     private readonly Timer _wakeRetry;
     private GCHandle _self;
 
@@ -83,49 +84,75 @@ public sealed unsafe partial class DirectNMessageQueue
     // 1 once closed. Written with Interlocked (a full fence) so that, together with the fence of ConcurrentQueue.Enqueue,
     // a TryPost racing with closing either sees the queue closed or has its item dropped by the closing thread.
     private int _closed;
+    // Owner-thread only: logical closure may happen on another thread before native cleanup is requested.
+    private bool _resourcesReleased;
+    private bool _windowDestroyed;
 
-    private DirectNMessageQueue()
+    private DirectNMessageQueue(Action<ConstructionStage, HWND>? constructionStageReached = null)
     {
         ManagedThreadId = Environment.CurrentManagedThreadId;
         Thread = Thread.CurrentThread;
         SynchronizationContext = new DirectNSynchronizationContext(this);
         _baselineContext = ExecutionContext.Capture();
-        _wakeRetry = new Timer(static state => ((DirectNMessageQueue)state!).RetryWake(), this, Timeout.Infinite, Timeout.Infinite);
-
-        // Signaled when the OS thread terminates, so a waiting Send is released even if the thread exits without Close.
-        var ownerThread = OpenThread(SYNCHRONIZE, 0, Functions.GetCurrentThreadId());
-        if (ownerThread != 0)
+        // Every queue must observe owner exit, including when no more posts arrive. Fail construction if the handle
+        // cannot be opened rather than accepting invocations that could remain incomplete after unexpected thread exit.
+        _ownerExit = new OwnerThreadExitHandle(OpenOwnerThreadHandle(Functions.GetCurrentThreadId()));
+        try
         {
-            _ownerExit = new OwnerThreadExitHandle(new SafeWaitHandle(ownerThread, ownsHandle: true));
+            constructionStageReached?.Invoke(ConstructionStage.OwnerHandleOpened, default);
+            _wakeRetry = new Timer(static state => ((DirectNMessageQueue)state!).RetryWake(), this, Timeout.Infinite, Timeout.Infinite);
+            EnsureWindowClassRegistered();
+
+            fixed (char* className = WindowClassName)
+            {
+                _hwnd = Functions.CreateWindowExW(
+                    0,
+                    new PWSTR { Value = (nint)className },
+                    default,
+                    0,
+                    0, 0, 0, 0,
+                    new HWND(HWND_MESSAGE),
+                    default,
+                    new HINSTANCE { Value = Functions.GetModuleHandleW(default).Value },
+                    0);
+            }
+
+            if (_hwnd.Value == 0)
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+
+            constructionStageReached?.Invoke(ConstructionStage.WindowCreated, _hwnd);
+            // Weak: the thread-static keeps the queue alive while its thread lives; owner-exit monitoring keeps it alive
+            // until queued work has been abandoned if the thread exits without Close.
+            _self = GCHandle.Alloc(this, GCHandleType.Weak);
+            Functions.SetWindowLongPtrW(_hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(_self));
+            constructionStageReached?.Invoke(ConstructionStage.UserDataAttached, _hwnd);
+            _ownerExitRegistration = ThreadPool.UnsafeRegisterWaitForSingleObject(_ownerExit,
+                static (state, _) => ((DirectNMessageQueue)state!).StopAcceptingWork(QueueCloseReason.OwnerThreadExited),
+                this, Timeout.Infinite, executeOnlyOnce: true);
+            constructionStageReached?.Invoke(ConstructionStage.ExitMonitorRegistered, _hwnd);
         }
-
-        EnsureWindowClassRegistered();
-
-        HWND hwnd;
-        fixed (char* className = WindowClassName)
+        catch
         {
-            hwnd = Functions.CreateWindowExW(
-                0,
-                new PWSTR { Value = (nint)className },
-                default,
-                0,
-                0, 0, 0, 0,
-                new HWND(HWND_MESSAGE),
-                default,
-                new HINSTANCE { Value = Functions.GetModuleHandleW(default).Value },
-                0);
-        }
+            // Roll back on the creating thread. Detach native callbacks before freeing their managed handle.
+            _ownerExitRegistration?.Unregister(null);
+            _wakeRetry?.Dispose();
+            if (_hwnd.Value != 0)
+            {
+                Functions.SetWindowLongPtrW(_hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, 0);
+                Functions.DestroyWindow(_hwnd);
+            }
 
-        if (hwnd.Value == 0)
-        {
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
-        }
+            if (_self.IsAllocated)
+            {
+                _self.Free();
+            }
 
-        // Weak: the thread-static keeps the queue alive while its thread lives, so it becomes collectable when the thread
-        // exits (the system then destroys the window) even if Close was never called.
-        _self = GCHandle.Alloc(this, GCHandleType.Weak);
-        Functions.SetWindowLongPtrW(hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, GCHandle.ToIntPtr(_self));
-        _hwnd = hwnd;
+            _ownerExit.Dispose();
+            GC.SuppressFinalize(this);
+            throw;
+        }
     }
 
     /// <summary>
@@ -164,13 +191,14 @@ public sealed unsafe partial class DirectNMessageQueue
     /// Must be called on the UI thread, which must run a message loop for queued work to execute.
     /// </summary>
     /// <returns>The queue of the current thread.</returns>
+    /// <exception cref="Win32Exception">The owner-thread handle or message-only window could not be created.</exception>
     public static DirectNMessageQueue GetOrCreateForCurrentThread() => t_current ??= new DirectNMessageQueue();
 
     /// <summary>
     /// Returns whether the calling thread is the UI thread that owns this queue.
     /// </summary>
     /// <returns><see langword="true"/> on the owning thread.</returns>
-    public bool CheckAccess() => Environment.CurrentManagedThreadId == ManagedThreadId;
+    public override bool CheckAccess() => Environment.CurrentManagedThreadId == ManagedThreadId;
 
     /// <summary>
     /// Queues <paramref name="callback"/> to run on the UI thread.
@@ -195,13 +223,22 @@ public sealed unsafe partial class DirectNMessageQueue
     /// <see langword="false"/> when the work can never run: the queue was closed or its thread has exited. Work accepted
     /// while the queue is being closed may still be dropped by the closing.
     /// </returns>
-    public bool TryPost(SendOrPostCallback callback, object? state) => TryPostAbandonable(callback, state, onAbandoned: null);
+    public bool TryPost(SendOrPostCallback callback, object? state) => TryPost(callback, state, onAbandoned: null);
+
+    /// <inheritdoc />
+    protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned) =>
+        TryPost(callback, state, onAbandoned);
 
     /// <summary>
-    /// Queues <paramref name="callback"/>, with what to do if it is dropped without running (closing the queue, or the owner
-    /// thread exiting): a cross-thread Send uses it to release its caller.
+    /// Queues <paramref name="callback"/>, with what to do if it is dropped without running: the queue is closed or its owner
+    /// thread exits before it runs. Exactly one of <paramref name="callback"/> and <paramref name="onAbandoned"/> is called for
+    /// accepted work; <paramref name="onAbandoned"/> may also be called when this returns <see langword="false"/>.
     /// </summary>
-    internal bool TryPostAbandonable(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned)
+    /// <param name="callback">The work to run.</param>
+    /// <param name="state">The state passed to <paramref name="callback"/> and <paramref name="onAbandoned"/>.</param>
+    /// <param name="onAbandoned">Called with <paramref name="state"/> if the work is dropped without running; may be <see langword="null"/>.</param>
+    /// <returns><see langword="false"/> when the work can never run: the queue was closed or its thread has exited.</returns>
+    public bool TryPost(SendOrPostCallback callback, object? state, Action<object?>? onAbandoned)
     {
         ArgumentNullException.ThrowIfNull(callback);
 
@@ -243,15 +280,25 @@ public sealed unsafe partial class DirectNMessageQueue
             throw new InvalidOperationException("A DirectNMessageQueue can only be closed by its own thread.");
         }
 
-        // 1. Logical closing: reject new work and abandon what is queued (the same as when the owner is found gone).
-        if (!StopAcceptingWork(QueueCloseReason.Closed))
+        if (_resourcesReleased)
         {
             return;
         }
 
+        _resourcesReleased = true;
+        // 1. Logical closing may already have happened, but owner-thread cleanup must still run once.
+        StopAcceptingWork(QueueCloseReason.Closed);
+
         // 2. Release the native resources: only here, on the owner thread, and only once.
+        _ownerExitRegistration.Unregister(null);
         _wakeRetry.Dispose();
-        Functions.DestroyWindow(_hwnd);
+        if (!_windowDestroyed)
+        {
+            Functions.SetWindowLongPtrW(_hwnd, WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, 0);
+            Functions.DestroyWindow(_hwnd);
+            _windowDestroyed = true;
+        }
+
         _self.Free();
         // Not _ownerExit: a Send accepted before closing may still be about to wait on it (its callback may even have closed the
         // queue). Its SafeHandle releases the thread handle once the queue is collected.
@@ -285,6 +332,20 @@ public sealed unsafe partial class DirectNMessageQueue
     /// </summary>
     internal Action<PostStage>? PostStageReachedForTests;
 
+    internal HWND WindowHandleForTests => _hwnd;
+
+    // Per-construction fault injection, without mutable process-wide hooks or reflection (also runs under Native AOT).
+    internal static DirectNMessageQueue GetOrCreateForCurrentThreadForTests(Action<ConstructionStage, HWND> stageReached) =>
+        t_current ??= new DirectNMessageQueue(stageReached);
+
+    internal enum ConstructionStage
+    {
+        OwnerHandleOpened,
+        WindowCreated,
+        UserDataAttached,
+        ExitMonitorRegistered,
+    }
+
     internal enum PostStage
     {
         Enqueued,
@@ -301,27 +362,9 @@ public sealed unsafe partial class DirectNMessageQueue
     internal void WaitForSend(DirectNSynchronizationContext.SendWork send)
     {
         var done = send.Done;
-        if (_ownerExit is { } ownerExit)
+        if (WaitHandle.WaitAny([done.WaitHandle, _ownerExit]) == 0)
         {
-            if (WaitHandle.WaitAny([done.WaitHandle, ownerExit]) == 0)
-            {
-                return;
-            }
-        }
-        else
-        {
-            while (!done.Wait(100))
-            {
-                if (!Thread.IsAlive)
-                {
-                    break;
-                }
-            }
-
-            if (done.IsSet)
-            {
-                return;
-            }
+            return;
         }
 
         // The owner exited without finishing the work, so it never will.
@@ -440,8 +483,9 @@ public sealed unsafe partial class DirectNMessageQueue
             // More work than one wake-up's worth (items or time). Posted messages are retrieved before input, paint and timer messages, so
             // another wake-up message would starve those: when any is pending, continue from a timer instead (retrieved after
             // all of them), as WPF does for background work.
-            if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0 && YieldToPendingMessages())
+            if ((GetQueueStatus(QS_INPUT_PAINT_TIMER) >> 16) != 0)
             {
+                YieldToPendingMessages();
                 return;
             }
 
@@ -450,7 +494,7 @@ public sealed unsafe partial class DirectNMessageQueue
         }
     }
 
-    private bool YieldToPendingMessages()
+    private void YieldToPendingMessages()
     {
         // From now on posts don't post a wake-up message (the timer picks their work up), and one a post made during the drain
         // already posted is removed: it would be retrieved before the input it should yield to.
@@ -461,7 +505,7 @@ public sealed unsafe partial class DirectNMessageQueue
 
         if (Functions.SetTimer(_hwnd, ContinueTimerId, 0, null) != 0)
         {
-            return true;
+            return;
         }
 
         // No timer available: post the wake-up message after all (_wakePending is already set, so Wake would skip it).
@@ -469,8 +513,6 @@ public sealed unsafe partial class DirectNMessageQueue
         {
             _wakeRetry.Change(WakeRetryDelay, Timeout.InfiniteTimeSpan);
         }
-
-        return true;
     }
 
     private void Execute(WorkItem item)
@@ -541,6 +583,17 @@ public sealed unsafe partial class DirectNMessageQueue
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial nint OpenThread(uint dwDesiredAccess, int bInheritHandle, uint dwThreadId);
 
+    internal static SafeWaitHandle OpenOwnerThreadHandle(uint threadId)
+    {
+        var handle = OpenThread(SYNCHRONIZE, 0, threadId);
+        if (handle == 0)
+        {
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        }
+
+        return new SafeWaitHandle(handle, ownsHandle: true);
+    }
+
     private static uint RegisterWakeMessage()
     {
         uint message;
@@ -593,32 +646,46 @@ public sealed unsafe partial class DirectNMessageQueue
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]
     private static nint WindowProc(nint hwnd, uint msg, nint wParam, nint lParam)
     {
-        var continueTimer = msg == WM_TIMER && (nuint)wParam == ContinueTimerId;
-        if (continueTimer)
+        try
         {
-            Functions.KillTimer(new HWND(hwnd), ContinueTimerId);
-        }
-
-        if (msg == WakeMessage || continueTimer)
-        {
-            var userData = Functions.GetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA);
-            if (userData != 0 && GCHandle.FromIntPtr(userData).Target is DirectNMessageQueue queue)
+            var continueTimer = msg == WM_TIMER && (nuint)wParam == ContinueTimerId;
+            if (continueTimer)
             {
-                try
-                {
-                    queue.ProcessQueue();
-                }
-                catch (Exception ex)
-                {
-                    // Exceptions must not cross the native boundary; Execute already routes work item failures.
-                    RethrowAsUnhandled(ex);
-                }
+                Functions.KillTimer(new HWND(hwnd), ContinueTimerId);
             }
 
+            if (msg == WakeMessage || continueTimer || msg == WM_NCDESTROY)
+            {
+                var userData = Functions.GetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA);
+                if (msg == WM_NCDESTROY)
+                {
+                    Functions.SetWindowLongPtrW(new HWND(hwnd), WINDOW_LONG_PTR_INDEX.GWLP_USERDATA, 0);
+                }
+
+                if (userData != 0 && GCHandle.FromIntPtr(userData).Target is DirectNMessageQueue queue)
+                {
+                    if (msg == WM_NCDESTROY)
+                    {
+                        queue._windowDestroyed = true;
+                        queue.StopAcceptingWork(QueueCloseReason.WindowGone);
+                    }
+                    else
+                    {
+                        queue.ProcessQueue();
+                    }
+                }
+
+                return 0;
+            }
+
+            return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
+        }
+        catch (Exception ex)
+        {
+            // Cover the entire native callback, including managed-handle lookup and destruction notifications.
+            RethrowAsUnhandled(ex);
             return 0;
         }
-
-        return Functions.DefWindowProcW(new HWND(hwnd), msg, new WPARAM { Value = (nuint)wParam }, new LPARAM { Value = lParam }).Value;
     }
 
     private sealed class WorkItem(SendOrPostCallback callback, object? state, ExecutionContext? context, Action<object?>? onAbandoned)
@@ -666,16 +733,4 @@ public sealed unsafe partial class DirectNMessageQueue
             SafeWaitHandle = handle;
         }
     }
-}
-
-/// <summary>
-/// Why a <see cref="DirectNMessageQueue"/> stopped accepting work (diagnostics).
-/// </summary>
-internal enum QueueCloseReason
-{
-    None,
-    Closed,
-    OwnerExitedDuringSend,
-    OwnerThreadExited,
-    WindowGone,
 }

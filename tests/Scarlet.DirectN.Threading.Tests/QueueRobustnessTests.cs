@@ -54,7 +54,7 @@ public class QueueRobustnessTests
 
         // Send's two steps, with the whole callback (which closes the queue) in between: the sender only starts waiting after.
         var work = new DirectNSynchronizationContext.SendWork(_ => queue.Close(), null);
-        Assert.True(queue.TryPostAbandonable(static s => ((DirectNSynchronizationContext.SendWork)s!).Run(), work, static s => ((DirectNSynchronizationContext.SendWork)s!).Abandon()));
+        Assert.True(queue.TryPost(static s => ((DirectNSynchronizationContext.SendWork)s!).Run(), work, static s => ((DirectNSynchronizationContext.SendWork)s!).Abandon()));
         Assert.True(work.Done.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
         Assert.True(queue.IsClosed);
 

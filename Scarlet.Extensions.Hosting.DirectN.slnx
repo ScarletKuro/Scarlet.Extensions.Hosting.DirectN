@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/tools/">
+    <Project Path="tools/Scarlet.DirectN.Threading.LoadTest/Scarlet.DirectN.Threading.LoadTest.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/HostingMinimal/HostingMinimal.csproj" />
     <Project Path="samples/HostingTrayIcon/HostingTrayIcon.csproj" />

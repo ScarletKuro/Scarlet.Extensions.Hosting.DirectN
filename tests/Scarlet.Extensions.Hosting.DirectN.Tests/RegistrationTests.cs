@@ -33,11 +33,34 @@ public class RegistrationTests
 
         var thread = provider.GetRequiredService<IDirectNThread>();
         Assert.Same(provider.GetRequiredService<DirectNThread>(), thread);
+        Assert.Same(thread.Dispatcher, provider.GetRequiredService<global::Scarlet.DirectN.Threading.DirectNDispatcher>());
         Assert.Same(provider.GetRequiredService<IDirectNContext>(), thread.Context);
         Assert.Equal(ApartmentState.STA, thread.MainThread.GetApartmentState());
         Assert.True(thread.MainThread.IsBackground);
         Assert.False(thread.Context.IsRunning);
         Assert.Null(thread.Context.Application);
+    }
+
+    [Fact]
+    public void AnApplicationRegisteredDispatcherIsKept()
+    {
+        var fake = new InlineDispatcher();
+        var services = new ServiceCollection();
+        services.AddSingleton<global::Scarlet.DirectN.Threading.DirectNDispatcher>(fake);
+        using var provider = services.AddDirectN().BuildServiceProvider();
+
+        Assert.Same(fake, provider.GetRequiredService<global::Scarlet.DirectN.Threading.DirectNDispatcher>());
+    }
+
+    private sealed class InlineDispatcher : global::Scarlet.DirectN.Threading.DirectNDispatcher
+    {
+        public override bool CheckAccess() => true;
+
+        protected override bool TryEnqueue(SendOrPostCallback callback, object? state, Action<object?> onAbandoned)
+        {
+            callback(state);
+            return true;
+        }
     }
 
     [Fact]

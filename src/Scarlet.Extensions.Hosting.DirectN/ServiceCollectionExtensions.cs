@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Scarlet.DirectN.Threading;
 using Scarlet.Extensions.Hosting.DirectN.Internal;
 
 namespace Scarlet.Extensions.Hosting.DirectN;
@@ -26,6 +27,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<DirectNContext>();
         services.TryAddSingleton<DirectNThread>();
         services.TryAddSingleton<IDirectNThread>(static provider => provider.GetRequiredService<DirectNThread>());
+        services.TryAddSingleton<DirectNDispatcher>(static provider => provider.GetRequiredService<IDirectNThread>().Dispatcher);
         services.TryAddSingleton<IDirectNContext>(static provider => provider.GetRequiredService<DirectNContext>());
         services.TryAddSingleton<DirectNStartupGuard>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DirectNHostedService>());
